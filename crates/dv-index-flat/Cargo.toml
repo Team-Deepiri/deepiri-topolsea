@@ -1,0 +1,16 @@
+[package]
+name = "dv-index-flat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dv-index-api = { path = "../dv-index-api" }
+dv-metrics = { path = "../dv-metrics" }
+dv-topk = { path = "../dv-topk" }
+dv-types = { path = "../dv-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"

@@ -1,0 +1,8 @@
+[package]
+name = "dv-index-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dv-types = { path = "../dv-types" }

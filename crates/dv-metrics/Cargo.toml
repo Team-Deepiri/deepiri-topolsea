@@ -1,0 +1,11 @@
+[package]
+name = "dv-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dv-types = { path = "../dv-types" }
+
+[dev-dependencies]
+approx = "0.5"

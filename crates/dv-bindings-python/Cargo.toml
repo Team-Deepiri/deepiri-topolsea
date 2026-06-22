@@ -1,0 +1,17 @@
+[package]
+name = "dv-bindings-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "topolsea_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+dv-metadata = { path = "../dv-metadata" }
+dv-query = { path = "../dv-query" }
+dv-types = { path = "../dv-types" }
+pyo3 = { workspace = true }
+numpy = { workspace = true }
+serde_json = { workspace = true }

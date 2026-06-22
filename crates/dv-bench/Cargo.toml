@@ -1,0 +1,18 @@
+[package]
+name = "dv-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+criterion = { workspace = true }
+dv-index-flat = { path = "../dv-index-flat" }
+dv-index-hnsw = { path = "../dv-index-hnsw" }
+dv-index-api = { path = "../dv-index-api" }
+dv-types = { path = "../dv-types" }
+rand = { workspace = true }
+
+[[bench]]
+name = "index_bench"
+harness = false
