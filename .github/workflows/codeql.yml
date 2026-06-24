@@ -28,5 +28,10 @@ jobs:
           languages: python, javascript-typescript
           config-file: ./.github/codeql/codeql-config.yml
 
+      - name: Install dependencies and Build
+        run: |
+          npm ci
+          npm run build # or tsc, webpack, etc., if applicable
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
