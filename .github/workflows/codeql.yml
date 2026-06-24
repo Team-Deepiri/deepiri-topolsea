@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   analyze:
-    name: Analyze (python, javascript-typescript)
+    name: Analyze (python, rust)
     runs-on: ubuntu-latest
 
     steps:
@@ -25,13 +25,8 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: python, javascript-typescript
+          languages: python, rust
           config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Install dependencies and Build
-        run: |
-          npm ci
-          npm run build # or tsc, webpack, etc., if applicable
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
