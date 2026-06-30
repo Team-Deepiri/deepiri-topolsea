@@ -1,6 +1,6 @@
 use dv_types::VectorId;
-use rand::Rng;
 use rand::rngs::StdRng;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

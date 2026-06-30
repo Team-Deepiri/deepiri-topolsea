@@ -87,10 +87,9 @@ impl Collection {
 
     fn new_index(config: &CollectionConfig) -> IndexBackend {
         match config.index_kind {
-            IndexKind::Flat => IndexBackend::Flat(Box::new(FlatIndex::new(
-                config.dimension,
-                config.metric,
-            ))),
+            IndexKind::Flat => {
+                IndexBackend::Flat(Box::new(FlatIndex::new(config.dimension, config.metric)))
+            }
             IndexKind::Hnsw => IndexBackend::Hnsw(Box::new(HnswIndex::new(
                 config.dimension,
                 config.metric,
