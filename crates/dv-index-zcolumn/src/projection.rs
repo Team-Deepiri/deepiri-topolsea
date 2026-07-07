@@ -51,6 +51,12 @@ impl RoutingProjection {
         let py = (y.tanh() + 1.0) / 2.0;
         (px.clamp(0.0, 0.9999), py.clamp(0.0, 0.9999))
     }
+
+    /// Batch project many vectors (parallel over inputs).
+    pub fn project_batch(&self, vectors: &[&[f32]]) -> Vec<(f32, f32)> {
+        use rayon::prelude::*;
+        vectors.par_iter().map(|v| self.project(v)).collect()
+    }
 }
 
 impl Default for RoutingProjection {

@@ -64,6 +64,22 @@ topolsea plan --size 1000000 --dimension 768 --top-k 20
 col = client.get_or_create_collection("docs", dimension=384, index="zcolumn")
 out = col.explain_query(query_vector=vec, top_k=10)
 stats = col.zcolumn_stats()
+batches = col.query_batch([vec, vec2], top_k=10)
+```
+
+## Fractal sharding (M4)
+
+Logical collections fan out to physical shards `{name}__s{N}` by fractal column key:
+
+```bash
+topolsea shard-create corpus --shards 8 --dimension 384 --index zcolumn
+```
+
+```rust
+db.create_sharded_collection("corp", 8, 384, DistanceMetric::Cosine, IndexKind::ZColumn)?;
+db.upsert_sharded("corp", "doc-1", vector, None)?;
+let hits = db.query_sharded("corp", &query, 10, None, 64)?;
+let batches = db.query_sharded_batch("corp", &queries, 10, None, 64)?;
 ```
 
 ## Benchmarks
@@ -82,9 +98,9 @@ Integration tests enforce **recall@10 within 15% of flat ground truth** on 200-v
 | M1 | Z-Column index + explain API ✅ |
 | M2 | Hybrid rerank + planner ✅ |
 | M3 | Column segment persistence + DR ✅ |
-| M4 | Distributed fractal shards (column = partition key) |
+| M4 | Distributed fractal shards (column = partition key) ✅ |
 | M5 | GPU batch projection + quantized scan |
-| M6 | Learned layer predictor (replace heuristics) |
+| M6 | Learned layer predictor (replace heuristics) — heuristic v2 shipped |
 
 ## API notes
 

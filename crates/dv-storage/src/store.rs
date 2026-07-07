@@ -199,6 +199,117 @@ impl StorageEngine {
     pub fn at_root(root: PathBuf) -> Self {
         Self { root }
     }
+
+    fn shards_dir(&self) -> PathBuf {
+        self.root.join("__shards__")
+    }
+
+    fn shard_manifest_path(&self, logical_name: &str) -> PathBuf {
+        self.shards_dir().join(format!("{logical_name}.json"))
+    }
+
+    pub fn shard_manifest_exists(&self, logical_name: &str) -> bool {
+        self.shard_manifest_path(logical_name).exists()
+    }
+
+    pub fn write_shard_manifest(
+        &self,
+        manifest: &crate::shard_format::ShardManifest,
+    ) -> Result<()> {
+        let dir = self.shards_dir();
+        fs::create_dir_all(&dir)?;
+        write_json(self.shard_manifest_path(&manifest.logical_name), manifest)
+    }
+
+    pub fn read_shard_manifest(
+        &self,
+        logical_name: &str,
+    ) -> Result<crate::shard_format::ShardManifest> {
+        read_json(self.shard_manifest_path(logical_name))
+    }
+
+    pub fn list_shard_manifests(&self) -> Result<Vec<crate::shard_format::ShardManifest>> {
+        let dir = self.shards_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.path().extension().and_then(|e| e.to_str()) == Some("json") {
+                let manifest: crate::shard_format::ShardManifest = read_json(entry.path())?;
+                out.push(manifest);
+            }
+        }
+        out.sort_by(|a, b| a.logical_name.cmp(&b.logical_name));
+        Ok(out)
+    }
+
+    pub fn delete_shard_manifest(&self, logical_name: &str) -> Result<()> {
+        let path = self.shard_manifest_path(logical_name);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        let routing = self.shard_routing_path(logical_name);
+        if routing.exists() {
+            fs::remove_file(routing)?;
+        }
+        let cluster = self.shard_cluster_path(logical_name);
+        if cluster.exists() {
+            fs::remove_file(cluster)?;
+        }
+        Ok(())
+    }
+
+    fn shard_routing_path(&self, logical_name: &str) -> PathBuf {
+        self.shards_dir()
+            .join(format!("{logical_name}.routing.json"))
+    }
+
+    pub fn write_shard_routing(
+        &self,
+        logical_name: &str,
+        index: &crate::shard_format::ShardRoutingIndex,
+    ) -> Result<()> {
+        fs::create_dir_all(self.shards_dir())?;
+        write_json(self.shard_routing_path(logical_name), index)
+    }
+
+    pub fn read_shard_routing(
+        &self,
+        logical_name: &str,
+    ) -> Result<crate::shard_format::ShardRoutingIndex> {
+        let path = self.shard_routing_path(logical_name);
+        if !path.exists() {
+            return Ok(crate::shard_format::ShardRoutingIndex::default());
+        }
+        read_json(path)
+    }
+
+    fn shard_cluster_path(&self, logical_name: &str) -> PathBuf {
+        self.shards_dir()
+            .join(format!("{logical_name}.cluster.json"))
+    }
+
+    pub fn write_shard_cluster(
+        &self,
+        logical_name: &str,
+        config: &crate::shard_format::ShardClusterConfig,
+    ) -> Result<()> {
+        fs::create_dir_all(self.shards_dir())?;
+        write_json(self.shard_cluster_path(logical_name), config)
+    }
+
+    pub fn read_shard_cluster(
+        &self,
+        logical_name: &str,
+    ) -> Result<crate::shard_format::ShardClusterConfig> {
+        let path = self.shard_cluster_path(logical_name);
+        if !path.exists() {
+            return Ok(crate::shard_format::ShardClusterConfig::default());
+        }
+        read_json(path)
+    }
 }
 
 fn write_json<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Result<()> {

@@ -69,6 +69,14 @@ impl TopKHeap {
         self.heap.len()
     }
 
+    pub fn capacity(&self) -> usize {
+        self.k
+    }
+
+    pub fn at_capacity(&self) -> bool {
+        self.len() >= self.k
+    }
+
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }

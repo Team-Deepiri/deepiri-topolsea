@@ -113,6 +113,45 @@ impl PyCollection {
         Ok(list.into())
     }
 
+    #[pyo3(signature = (query_vectors, top_k=10, filter=None, ef=64))]
+    fn query_batch(
+        &self,
+        py: Python<'_>,
+        query_vectors: Vec<Vec<f32>>,
+        top_k: usize,
+        filter: Option<&Bound<'_, PyAny>>,
+        ef: usize,
+    ) -> PyResult<PyObject> {
+        let filter_rust = filter.map(|f| python_filter_to_rust(f)).transpose()?;
+        let refs: Vec<&[f32]> = query_vectors.iter().map(|v| v.as_slice()).collect();
+
+        let mut db = self.db.lock().unwrap();
+        let col = db
+            .get_collection(&self.name)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+        let batches = col
+            .query_batch(&refs, top_k, filter_rust.as_ref(), ef)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+        let outer = PyList::empty_bound(py);
+        for batch in batches {
+            let list = PyList::empty_bound(py);
+            for r in batch {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("id", r.id)?;
+                dict.set_item("distance", r.distance)?;
+                dict.set_item("score", r.score)?;
+                if let Some(meta) = r.metadata {
+                    dict.set_item("metadata", json_to_python(py, &meta)?)?;
+                }
+                list.append(dict)?;
+            }
+            outer.append(list)?;
+        }
+        Ok(outer.into())
+    }
+
     fn persist(&self) -> PyResult<()> {
         let mut db = self.db.lock().unwrap();
         let col = db

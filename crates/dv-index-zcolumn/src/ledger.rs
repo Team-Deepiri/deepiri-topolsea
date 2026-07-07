@@ -40,6 +40,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decay_reduces_stale_weight() {
+        let mut ledger = AccessLedger::default();
+        ledger.record_hit(1_000);
+        let before = ledger.ema_weight;
+        ledger.decay(1_000 + 3_600_000, 3_600_000);
+        assert!(ledger.ema_weight < before);
+    }
+
+    #[test]
     fn hit_increases_weight() {
         let mut ledger = AccessLedger::default();
         ledger.record_hit(1000);

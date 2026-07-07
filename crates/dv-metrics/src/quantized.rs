@@ -50,17 +50,10 @@ pub fn decode(data: &[u8], tier: QuantTier, dimension: usize) -> Vec<f32> {
     }
 }
 
-/// Squared L2 distance against U8-quantized stored vector.
+/// Squared L2 distance against U8-quantized stored vector (AVX2/NEON when available).
 #[inline]
 pub fn l2_squared_u8(query: &[f32], data: &[u8]) -> f32 {
-    let n = query.len().min(data.len());
-    let mut sum = 0.0f32;
-    for (i, qv) in query.iter().enumerate().take(n) {
-        let stored = (data[i] as f32 / 127.5) - 1.0;
-        let d = *qv - stored;
-        sum += d * d;
-    }
-    sum
+    crate::simd_l2_u8::l2_squared_u8(query, data)
 }
 
 /// Squared L2 distance against U16-quantized stored vector.

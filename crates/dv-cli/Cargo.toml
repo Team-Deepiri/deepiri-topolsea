@@ -10,7 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+dv-bench = { path = "../dv-bench" }
 dv-metadata = { path = "../dv-metadata" }
-dv-query = { path = "../dv-query" }
+dv-query = { path = "../dv-query", features = ["shard-server"] }
 dv-types = { path = "../dv-types" }
 serde_json = { workspace = true }
