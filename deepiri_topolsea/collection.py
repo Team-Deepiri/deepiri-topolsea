@@ -55,6 +55,27 @@ class Collection:
             for item in raw
         ]
 
+    def query_batch(
+        self,
+        query_vectors: list[list[float]],
+        top_k: int = 10,
+        filter: dict[str, Any] | None = None,
+        ef: int = 64,
+    ) -> list[list[QueryResult]]:
+        raw = self._native.query_batch(query_vectors, top_k, filter, ef)
+        return [
+            [
+                QueryResult(
+                    id=item["id"],
+                    distance=float(item["distance"]),
+                    score=float(item["score"]),
+                    metadata=item.get("metadata"),
+                )
+                for item in batch
+            ]
+            for batch in raw
+        ]
+
     def persist(self) -> None:
         self._native.persist()
 

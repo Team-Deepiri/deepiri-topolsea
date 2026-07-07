@@ -388,6 +388,20 @@ impl Collection {
         Ok(results)
     }
 
+    /// Batch ANN query — one round-trip per query vector, shared filter/ef.
+    pub fn query_batch(
+        &mut self,
+        query_vectors: &[&[f32]],
+        top_k: usize,
+        filter: Option<&Filter>,
+        ef: usize,
+    ) -> Result<Vec<Vec<QueryResult>>> {
+        query_vectors
+            .iter()
+            .map(|q| self.query(q, top_k, filter, ef))
+            .collect()
+    }
+
     pub fn query_explain(
         &mut self,
         query_vector: &[f32],

@@ -174,7 +174,9 @@ impl ZColumnIndex {
 
     /// Update access ledgers for columns that served query results.
     pub fn record_access(&mut self, ids: &[VectorId], now_ms: u64) {
+        let half_life = self.config.decay_half_life_ms;
         for col in self.columns.values_mut() {
+            col.ledger.decay(now_ms, half_life);
             if col.ids.iter().any(|id| ids.contains(id)) {
                 col.ledger.record_hit(now_ms);
             }

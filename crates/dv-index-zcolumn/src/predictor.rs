@@ -19,6 +19,20 @@ impl LayerPredictor {
         Self::new(0.3)
     }
 
+    /// Query specificity: low variance / high norm → tunnel inward; diffuse → start outer.
+    fn query_specificity(query: &[f32]) -> f32 {
+        if query.is_empty() {
+            return 0.0;
+        }
+        let mean = query.iter().sum::<f32>() / query.len() as f32;
+        let variance = query.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / query.len() as f32;
+        let norm = query.iter().map(|v| v * v).sum::<f32>().sqrt();
+        // Peaked queries (low variance, moderate norm) score higher.
+        let spread_penalty = 1.0 / (1.0 + variance * 4.0);
+        let norm_factor = (norm / (norm + 1.0)).clamp(0.0, 1.0);
+        (spread_penalty * 0.6 + norm_factor * 0.4).clamp(0.0, 1.0)
+    }
+
     /// Returns the starting layer index (0 = outermost).
     /// Generic queries start outer; specific queries tunnel inward.
     pub fn entry_layer(
@@ -33,6 +47,8 @@ impl LayerPredictor {
         }
 
         let max_layer = grid.num_layers().saturating_sub(1) as u8;
+        let specificity = Self::query_specificity(query);
+
         let mut best_layer = 0u8;
         let mut best_dist = f32::MAX;
 
@@ -61,7 +77,15 @@ impl LayerPredictor {
             }
         }
 
-        if best_dist <= self.specificity_threshold {
+        // Blend centroid proximity with query-shape specificity (M6 heuristic).
+        let centroid_score = if best_dist.is_finite() {
+            1.0 / (1.0 + best_dist)
+        } else {
+            0.0
+        };
+        let combined = specificity * 0.55 + centroid_score * 0.45;
+
+        if combined >= self.specificity_threshold {
             best_layer
         } else {
             0
@@ -77,14 +101,32 @@ mod tests {
 
     #[test]
     fn generic_query_starts_outer() {
-        let grid = FractalGrid::new((4, 4), 2, 0.5);
-        let col = ColumnStack::new(
-            ColumnPath::from_cell(crate::grid::CellCoord::new(1, 0, 0)),
+        let grid = FractalGrid::new((4, 4), 3, 0.5);
+        let mut col = ColumnStack::new(
+            ColumnPath::from_cell(crate::grid::CellCoord::new(2, 1, 1)),
             2,
             QuantTier::F32,
         );
+        col.push(dv_types::VectorId(1), &[1.0, 0.0]);
         let predictor = LayerPredictor::default_predictor();
-        let layer = predictor.entry_layer(&[10.0, 10.0], &grid, &[&col], DistanceMetric::L2);
+        // Orthogonal diffuse query should not tunnel to inner layer.
+        let layer =
+            predictor.entry_layer(&[0.0, 1.0], &grid, &[&col], DistanceMetric::L2);
         assert_eq!(layer, 0);
+    }
+
+    #[test]
+    fn peaked_query_can_tunnel_inward() {
+        let grid = FractalGrid::new((4, 4), 3, 0.5);
+        let mut col = ColumnStack::new(
+            ColumnPath::from_cell(crate::grid::CellCoord::new(2, 1, 1)),
+            4,
+            QuantTier::F32,
+        );
+        col.push(dv_types::VectorId(1), &[1.0, 0.0, 0.0, 0.0]);
+        let predictor = LayerPredictor::new(0.2);
+        let layer =
+            predictor.entry_layer(&[1.0, 0.0, 0.0, 0.0], &grid, &[&col], DistanceMetric::L2);
+        assert!(layer >= 1);
     }
 }

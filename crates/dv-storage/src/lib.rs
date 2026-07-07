@@ -2,6 +2,7 @@ mod column_format;
 mod column_segment;
 mod format;
 mod segment;
+mod shard_format;
 mod store;
 
 pub use column_format::{
@@ -10,4 +11,5 @@ pub use column_format::{
 pub use column_segment::{ColumnCellRecord, ColumnSegment};
 pub use format::{FileHeader, MAGIC, VERSION};
 pub use segment::VectorSegment;
+pub use shard_format::{parse_physical_shard_name, ShardManifest};
 pub use store::StorageEngine;

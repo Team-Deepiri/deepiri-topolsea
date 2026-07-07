@@ -35,8 +35,8 @@ fn recall_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("recall_at_10");
     group.sample_size(10);
 
-    let dim = 64;
-    let n = 500;
+    let dim = 128;
+    let n = 2000;
     let k = 10;
     let mut rng = StdRng::seed_from_u64(42);
     let vectors = random_vectors(&mut rng, n, dim);
@@ -52,7 +52,7 @@ fn recall_comparison(c: &mut Criterion) {
         zcol.insert(id, Vector::new(v.clone())).unwrap();
     }
 
-    let queries: Vec<Vec<f32>> = (0..10)
+    let queries: Vec<Vec<f32>> = (0..20)
         .map(|_| random_vectors(&mut rng, 1, dim).pop().unwrap())
         .collect();
     let mut ground = Vec::new();

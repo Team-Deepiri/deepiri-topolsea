@@ -51,6 +51,28 @@ enum Commands {
         #[arg(long, default_value = "10")]
         top_k: usize,
     },
+    /// Create a fractal-sharded logical collection (M4)
+    ShardCreate {
+        name: String,
+        #[arg(long, default_value = "4")]
+        shards: usize,
+        #[arg(long)]
+        dimension: usize,
+        #[arg(long, default_value = "cosine")]
+        metric: String,
+        #[arg(long, default_value = "zcolumn")]
+        index: String,
+    },
+    /// Batch search (multiple query vectors)
+    BatchSearch {
+        collection: String,
+        #[arg(long)]
+        vectors_file: PathBuf,
+        #[arg(long, default_value = "5")]
+        top_k: usize,
+        #[arg(long)]
+        sharded: bool,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -155,6 +177,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("recommended_index: {:?}", plan.index_kind);
             println!("ef: {}", plan.ef);
             println!("reason: {}", plan.reason);
+        }
+        Commands::ShardCreate {
+            name,
+            shards,
+            dimension,
+            metric,
+            index,
+        } => {
+            let metric = DistanceMetric::from_str(&metric)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+            let index_kind = match index.to_lowercase().as_str() {
+                "flat" => IndexKind::Flat,
+                "hnsw" => IndexKind::Hnsw,
+                _ => IndexKind::ZColumn,
+            };
+            db.create_sharded_collection(&name, shards, dimension, metric, index_kind)?;
+            println!(
+                "created sharded collection '{name}' ({shards} fractal shards, dim={dimension}, index={index})"
+            );
+        }
+        Commands::BatchSearch {
+            collection,
+            vectors_file,
+            top_k,
+            sharded,
+        } => {
+            let raw = std::fs::read_to_string(&vectors_file)?;
+            let queries: Vec<Vec<f32>> = raw
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|line| {
+                    line.split(',')
+                        .map(|s| s.trim().parse::<f32>())
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let refs: Vec<&[f32]> = queries.iter().map(|v| v.as_slice()).collect();
+            if sharded {
+                let batches = db.query_sharded_batch(&collection, &refs, top_k, None, 64)?;
+                for (i, results) in batches.iter().enumerate() {
+                    println!("query[{i}]:");
+                    for r in results {
+                        println!(
+                            "  {} distance={:.6}",
+                            r.id.as_deref().unwrap_or("?"),
+                            r.distance
+                        );
+                    }
+                }
+            } else {
+                let col = db.get_collection(&collection)?;
+                let dim = col.config().dimension;
+                for (i, q) in queries.iter().enumerate() {
+                    if q.len() != dim {
+                        return Err(format!("query {i} dim {} != {dim}", q.len()).into());
+                    }
+                }
+                let batches = col.query_batch(&refs, top_k, None, 64)?;
+                for (i, results) in batches.iter().enumerate() {
+                    println!("query[{i}]:");
+                    for r in results {
+                        println!(
+                            "  {} distance={:.6}",
+                            r.id.as_deref().unwrap_or("?"),
+                            r.distance
+                        );
+                    }
+                }
+            }
         }
     }
 

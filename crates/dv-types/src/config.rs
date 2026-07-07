@@ -39,6 +39,10 @@ fn default_hybrid_rerank_pool() -> usize {
     3
 }
 
+fn default_decay_half_life_ms() -> u64 {
+    3_600_000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZColumnConfig {
     pub outer_grid: (u16, u16),
@@ -50,6 +54,8 @@ pub struct ZColumnConfig {
     pub projection_seed: u64,
     #[serde(default = "default_hybrid_rerank_pool")]
     pub hybrid_rerank_pool: usize,
+    #[serde(default = "default_decay_half_life_ms")]
+    pub decay_half_life_ms: u64,
 }
 
 impl Default for ZColumnConfig {
@@ -62,6 +68,7 @@ impl Default for ZColumnConfig {
             ef_search: 64,
             projection_seed: 42,
             hybrid_rerank_pool: 3,
+            decay_half_life_ms: 3_600_000,
         }
     }
 }
