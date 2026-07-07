@@ -157,23 +157,9 @@ impl FractalGrid {
     }
 }
 
-/// Project a high-dimensional vector to [0, 1]^2 for spatial routing.
-pub fn project_2d(vector: &[f32]) -> (f32, f32) {
-    if vector.is_empty() {
-        return (0.5, 0.5);
-    }
-    let px = (vector[0].tanh() + 1.0) / 2.0;
-    let py = if vector.len() >= 2 {
-        (vector[1].tanh() + 1.0) / 2.0
-    } else {
-        0.5
-    };
-    (px.clamp(0.0, 0.9999), py.clamp(0.0, 0.9999))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::FractalGrid;
 
     #[test]
     fn deepest_cell_nests_toward_center() {

@@ -1,4 +1,5 @@
 use crate::column::ColumnStack;
+use crate::explain::QueryExplain;
 use crate::grid::{CellCoord, FractalGrid};
 use crate::predictor::LayerPredictor;
 use crate::quant;
@@ -46,19 +47,31 @@ impl<'a> RevertBeamSearch<'a> {
     }
 
     pub fn run(&mut self, query: &[f32], top_k: usize, ef: usize) -> Vec<(VectorId, f32)> {
+        self.run_with_explain(query, top_k, ef).0
+    }
+
+    pub fn run_with_explain(
+        &mut self,
+        query: &[f32],
+        top_k: usize,
+        ef: usize,
+    ) -> (Vec<(VectorId, f32)>, QueryExplain) {
+        let mut explain = QueryExplain::new("predictive_revert_beam");
         if self.columns.is_empty() || top_k == 0 {
-            return Vec::new();
+            return (Vec::new(), explain);
         }
 
         let col_refs: Vec<&ColumnStack> = self.columns.iter().collect();
         let start_layer = self
             .predictor
             .entry_layer(query, self.grid, &col_refs, self.metric);
+        explain.entry_layer = start_layer;
 
         let beam_width = ef.max(top_k).max(1);
         let mut heap = TopKHeap::new(top_k);
         let mut visited: HashSet<VectorId> = HashSet::new();
         let mut revert_stack: VecDeque<CellCoord> = VecDeque::new();
+        let mut visited_cells: HashSet<(u8, u16, u16)> = HashSet::new();
 
         let mut frontier: Vec<(CellCoord, f32)> = self.score_layer_columns(start_layer, query);
         frontier.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -66,12 +79,14 @@ impl<'a> RevertBeamSearch<'a> {
 
         let mut depth = start_layer;
         let max_depth = self.grid.num_layers().saturating_sub(1) as u8;
+        explain.deepest_layer_reached = depth;
 
         loop {
             let mut found_any = false;
 
             for (cell, _) in &frontier {
                 self.stats.columns_scanned += 1;
+                visited_cells.insert(cell.key());
                 if let Some(col) = self.column_at(*cell) {
                     for (i, &id) in col.ids.iter().enumerate() {
                         if !visited.insert(id) {
@@ -108,6 +123,7 @@ impl<'a> RevertBeamSearch<'a> {
                 if !child_frontier.is_empty() {
                     revert_stack.push_back(frontier[0].0);
                     depth += 1;
+                    explain.deepest_layer_reached = depth;
                     frontier = child_frontier;
                     continue;
                 }
@@ -117,7 +133,6 @@ impl<'a> RevertBeamSearch<'a> {
                 break;
             }
 
-            // Callback reverse: ascend and try sibling columns
             if let Some(parent_cell) = revert_stack.pop_back() {
                 self.stats.revert_count += 1;
                 depth = parent_cell.layer;
@@ -137,8 +152,8 @@ impl<'a> RevertBeamSearch<'a> {
             }
         }
 
-        // Fallback: scan all columns if heap is underfilled
         if heap.len() < top_k {
+            explain.used_fallback_scan = true;
             for col in self.columns {
                 for &id in &col.ids {
                     if visited.insert(id) {
@@ -151,10 +166,20 @@ impl<'a> RevertBeamSearch<'a> {
             }
         }
 
-        heap.into_sorted_vec()
+        explain.revert_count = self.stats.revert_count;
+        explain.columns_scanned = self.stats.columns_scanned;
+        explain.candidate_pool = visited.len();
+        explain.column_paths = visited_cells
+            .iter()
+            .map(|(l, x, y)| format!("{l}:{x}:{y}"))
+            .collect();
+
+        let results = heap
+            .into_sorted_vec()
             .into_iter()
             .map(|c| (c.id, c.distance))
-            .collect()
+            .collect();
+        (results, explain)
     }
 
     fn column_at(&self, cell: CellCoord) -> Option<&ColumnStack> {

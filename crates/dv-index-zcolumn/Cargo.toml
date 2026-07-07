@@ -11,6 +11,7 @@ dv-topk = { path = "../dv-topk" }
 dv-types = { path = "../dv-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 approx = "0.5"

@@ -151,14 +151,58 @@ fn zcolumn_segment_files_roundtrip() {
     col.upsert("y", vec![0.0, 1.0, 0.0, 0.0], None).unwrap();
     col.persist().unwrap();
 
-    let layer0 = db
-        .storage()
-        .read_column_layer("seg", 0, 4, dv_storage::QuantTierTag::U8)
-        .unwrap();
-    assert!(!layer0.is_empty());
-    assert!(layer0.iter().any(|r| !r.ids.is_empty()));
+    let mut total_cells = 0usize;
+    for layer in 0..3u8 {
+        let tier = match layer {
+            0 => dv_storage::QuantTierTag::U8,
+            2 => dv_storage::QuantTierTag::F32,
+            _ => dv_storage::QuantTierTag::U16,
+        };
+        total_cells += db
+            .storage()
+            .read_column_layer("seg", layer, 4, tier)
+            .unwrap()
+            .len();
+    }
+    assert!(total_cells > 0, "expected fractal column segments on disk");
 
     let manifest = db.storage().read_zcolumn_manifest("seg").unwrap();
     assert_eq!(manifest.dimension, 4);
     assert_eq!(manifest.layer_files.len(), 3);
+}
+
+#[test]
+fn zcolumn_disaster_recovery_from_vectors_bin() {
+    let dir = tempdir().unwrap();
+    let mut db = Database::open(dir.path()).unwrap();
+    let col = db
+        .get_or_create_collection_with_config("dr", 4, DistanceMetric::L2, IndexKind::ZColumn)
+        .unwrap();
+    col.upsert("a", vec![1.0, 0.0, 0.0, 0.0], None).unwrap();
+    col.persist().unwrap();
+
+    std::fs::remove_file(dir.path().join("dr/index.bin")).unwrap();
+
+    let mut db2 = Database::open(dir.path()).unwrap();
+    let col2 = db2.get_collection("dr").unwrap();
+    assert_eq!(col2.len(), 1);
+    let results = col2.query(&[1.0, 0.0, 0.0, 0.0], 1, None, 64).unwrap();
+    assert_eq!(results[0].id.as_deref(), Some("a"));
+}
+
+#[test]
+fn zcolumn_query_explain() {
+    let dir = tempdir().unwrap();
+    let mut db = Database::open(dir.path()).unwrap();
+    let col = db
+        .get_or_create_collection_with_config("ex", 8, DistanceMetric::Cosine, IndexKind::ZColumn)
+        .unwrap();
+    for i in 0..30u64 {
+        let v: Vec<f32> = (0..8).map(|d| ((i + d) as f32 * 0.1).sin()).collect();
+        col.upsert(&format!("v{i}"), v, None).unwrap();
+    }
+    let (results, explain) = col.query_explain(&[0.1; 8], 5, None, 32).unwrap();
+    assert!(!results.is_empty());
+    assert!(!explain.column_paths.is_empty());
+    assert!(explain.planner_reason.is_some());
 }

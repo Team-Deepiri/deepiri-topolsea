@@ -1,101 +1,98 @@
-# Z-Column Protocol
+# Z-Column Protocol — Why This Is a Different Species of Vector Engine
 
-The **Z-Column Protocol** is Topolsea's fractal, vertically-stacked vector index. It replaces the traditional 2D matrix model (row = cluster, column = depth) with a **3D sparse tensor**:
+Topolsea Z-Column is not "HNSW with extra steps." It is a **fractal, vertically-addressed sparse tensor** for billion-scale ANN — built to beat graph indexes on density, explainability, and recovery.
 
-| Axis | Matrix model | Z-Column tensor |
-|------|-------------|-----------------|
-| X | drink type / cluster | spatial column coordinate |
-| Y | depth (retired) | **height** — stack count per column |
-| Z | — | **access weight** — time/frequency signal |
+## The Pitch (30 seconds)
 
-## Addressing
+Traditional vector DBs store points in a **flat grid**: find row (cluster), push depth (coil/slot). That's two operations, horizontal waste, and greedy graphs that can't backtrack.
 
-A vector's address is a variable-length recursive path through fractal layers:
+Z-Column stores vectors in **nested vertical columns** that shrink toward the center like a fractal. One address axis. Gravity does the rest. When the query is wrong, **callback reverse** propagates a miss signal up the stack and tries sibling columns — fixing HNSW's "stuck at local optimum" problem.
 
-```
-[Layer0_X, Layer0_Y, Layer1_Offset, ..., StackIndex]
-```
+## Core Primitives
 
-Outer layers cover the full projected space. Inner layers nest toward the center with halving cell pitch (`pitch_ratio`, default 0.5).
+| Primitive | What it does |
+|-----------|--------------|
+| `FractalGrid` | Spatial layers nesting toward center (`pitch_ratio`) |
+| `RoutingProjection` | Seeded random projection → 2D fractal coordinates (not naive dim 0/1) |
+| `ColumnStack` | Vertical LIFO stack per cell with quantized payloads |
+| `LayerPredictor` | Predictive revert — start outer (generic) or inner (specific) |
+| `RevertBeamSearch` | Callback-reverse beam search with `ef` width |
+| `Hybrid rerank` | Coarse fractal pool → exact FP32 rerank on full vectors |
+| `CompactionEngine` | Center collapse, hot promote, cold demote |
+| `IndexPlanner` | Recommends Z-Column at scale (≥1k vectors, ≥64 dims) |
 
-## Architecture
+## Query Explain (the audit trail)
 
-```
-Collection API
-    └── ZColumnIndex (dv-index-zcolumn)
-            ├── FractalGrid        — spatial nesting
-            ├── ColumnStack        — vertical vector stacks
-            ├── LayerPredictor     — predictive revert entry
-            ├── RevertBeamSearch   — callback-reverse backtracking
-            ├── CompactionEngine   — center collapse + hot/cold migration
-            └── AccessLedger       — Z-axis weight per column
-```
+Every Z-Column query can return:
 
-## Search: Predictive Revert + Callback Reverse
-
-1. **LayerPredictor** estimates query specificity from centroid distances. Generic queries start at layer 0; specific queries tunnel inward.
-2. **RevertBeamSearch** descends the fractal grid with beam width `ef`. On dead-end, it **callbacks upward** to sibling columns at the parent layer — fixing HNSW's greedy no-backtrack limitation.
-3. Full-precision vectors in `vectors` HashMap ground-truth distances; quantized column payloads accelerate scanning.
-
-## Multi-Resolution Storage
-
-| Layer | Quantization | Role |
-|-------|-------------|------|
-| 0 (outer) | U8 | hot/common vectors, fast scan |
-| 1 (middle) | U16 | medium specificity |
-| 2+ (inner) | F32 | rare/outlier exact match |
-
-On-disk layout per collection:
-
-```
-{collection}/
-├── manifest.json
-├── index.bin              # serialized ZColumnIndex graph
-├── vectors.bin            # full-precision backup
-└── columns/
-    ├── manifest.json
-    ├── L0.grid.bin
-    ├── L1.grid.bin
-    └── L2.grid.bin
+```json
+{
+  "entry_layer": 0,
+  "deepest_layer": 2,
+  "revert_count": 1,
+  "columns_scanned": 14,
+  "column_paths": ["0:3:2", "1:1:0", "2:0:1"],
+  "strategy": "predictive_revert_hybrid_rerank",
+  "planner_reason": "high-D large collection — fractal Z-Column with hybrid rerank"
+}
 ```
 
-## Self-Compaction
+This is your **observability moat** — no black-box ANN.
 
-`CompactionEngine` runs on `persist()`:
+## Disaster Recovery
 
-- **Center collapse**: empty innermost columns removed; fractal layer count may shrink
-- **Hot promote**: high `ema_weight` vectors move to outer (coarser) layers
-- **Cold demote**: low-access vectors sink to inner (finer) layers
+On open, if `index.bin` is gone but `vectors.bin` survives:
 
-## Usage
+1. Rebuild full index from `vectors.bin`
+2. Optionally hydrate column stacks from `columns/L*.grid.bin`
+
+You don't lose the vending machine because someone deleted the graph file.
+
+## API Surface
 
 ### Rust / CLI
 
 ```bash
-cargo run -p dv-cli -- --data-dir ./data create mycol --dimension 128 --metric cosine --index zcolumn
+topolsea create docs --dimension 384 --metric cosine --index zcolumn
+topolsea search docs --vector 0.1,0.2,... --top-k 10 --explain
+topolsea plan --size 1000000 --dimension 768 --top-k 20
 ```
 
 ### Python
 
 ```python
-from deepiri_topolsea import Client
-
-client = Client("./data")
-col = client.get_or_create_collection("docs", dimension=384, metric="cosine", index="zcolumn")
-col.upsert(ids=["a"], vectors=[[0.1] * 384])
-results = col.query(query_vector=[0.15] * 384, top_k=5)
-col.persist()
+col = client.get_or_create_collection("docs", dimension=384, index="zcolumn")
+out = col.explain_query(query_vector=vec, top_k=10)
+stats = col.zcolumn_stats()
 ```
 
-## Relation to HNSW
+## Benchmarks
 
-Z-Column is a parallel `IndexKind` alongside `Flat` and `Hnsw`. It borrows HNSW's hierarchical layer intuition but replaces random probabilistic promotion with **spatial fractal nesting**, adds **callback-reverse backtracking**, and tiers storage precision by layer depth.
+```bash
+cargo bench -p dv-bench --bench index_bench
+cargo bench -p dv-bench --bench recall_bench
+```
 
-## Go / No-Go Gates
+Integration tests enforce **recall@10 within 15% of flat ground truth** on 200-vector synthetic workloads.
 
-- recall@10 within 2% of HNSW at equal memory on 10k/128d synthetic
+## Roadmap to Production Scale
+
+| Milestone | Target |
+|-----------|--------|
+| M1 | Z-Column index + explain API ✅ |
+| M2 | Hybrid rerank + planner ✅ |
+| M3 | Column segment persistence + DR ✅ |
+| M4 | Distributed fractal shards (column = partition key) |
+| M5 | GPU batch projection + quantized scan |
+| M6 | Learned layer predictor (replace heuristics) |
+
+## Go / No-Go (unchanged)
+
+- recall@10 within 2% of HNSW at equal memory on 10k/128d
 - p50 latency ≤ 1.5× HNSW
 - callback reverse on < 30% of queries
-- compaction preserves recall after 10k insert/delete cycles
+- compaction preserves recall after 10k cycles
 
-See `dv-bench` for comparative benchmarks.
+---
+
+*The vending machine metaphor is the intuition. The payload is a new index species in your vector engine — with explainability, recovery, and a path to billion-vector fractal sharding.*

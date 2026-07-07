@@ -8,7 +8,8 @@ use dv_types::{CollectionConfig, ExternalId, IndexKind, Result, TopolseaError, V
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::query::QueryResult;
+use crate::planner::{IndexPlanner, QueryPlannerInput};
+use crate::query::{QueryExplainResult, QueryResult};
 
 enum IndexBackend {
     Flat(Box<FlatIndex>),
@@ -70,6 +71,18 @@ impl IndexBackend {
             z.record_access(hit_ids, 0);
         }
     }
+
+    fn zcolumn_search_explain(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        ef: usize,
+    ) -> Option<Result<(Vec<dv_types::SearchHit>, dv_index_zcolumn::QueryExplain)>> {
+        match self {
+            IndexBackend::ZColumn(z) => Some(z.search_with_explain(query, top_k, ef)),
+            _ => None,
+        }
+    }
 }
 
 /// A single named vector collection with index + metadata.
@@ -104,7 +117,22 @@ impl Collection {
         };
         col.rebuild_id_maps();
         col.load_zcolumn_segments()?;
+        col.rebuild_zcolumn_from_vectors()?;
         Ok(col)
+    }
+
+    fn rebuild_zcolumn_from_vectors(&mut self) -> Result<()> {
+        if self.config.index_kind != IndexKind::ZColumn || !self.index.as_ref().is_empty() {
+            return Ok(());
+        }
+        let vectors = self.storage.read_vectors(self.name())?;
+        if vectors.is_empty() {
+            return Ok(());
+        }
+        if let IndexBackend::ZColumn(z) = &mut self.index {
+            z.rebuild_from_vectors(&vectors)?;
+        }
+        Ok(())
     }
 
     fn load_zcolumn_segments(&mut self) -> Result<()> {
@@ -298,6 +326,97 @@ impl Collection {
         self.index.record_zcolumn_access(&hit_ids);
 
         Ok(results)
+    }
+
+    pub fn query_explain(
+        &mut self,
+        query_vector: &[f32],
+        top_k: usize,
+        filter: Option<&Filter>,
+        ef: usize,
+    ) -> Result<(Vec<QueryResult>, QueryExplainResult)> {
+        let plan = IndexPlanner::plan(&QueryPlannerInput {
+            collection_size: self.len(),
+            dimension: self.config.dimension,
+            top_k,
+            has_filter: filter.is_some(),
+        });
+
+        let mut explain = QueryExplainResult {
+            index_kind: format!("{:?}", self.config.index_kind),
+            planner_reason: Some(plan.reason),
+            ..Default::default()
+        };
+
+        let fetch_k = if filter.is_some() {
+            top_k.saturating_mul(10).max(top_k)
+        } else {
+            top_k
+        };
+
+        let hits =
+            if let Some(result) = self.index.zcolumn_search_explain(query_vector, fetch_k, ef) {
+                let (hits, zexplain) = result?;
+                explain.entry_layer = Some(zexplain.entry_layer);
+                explain.deepest_layer = Some(zexplain.deepest_layer_reached);
+                explain.revert_count = zexplain.revert_count;
+                explain.columns_scanned = zexplain.columns_scanned;
+                explain.column_paths = zexplain.column_paths;
+                explain.strategy = zexplain.strategy;
+                hits
+            } else {
+                explain.strategy = "standard_index_search".into();
+                self.index.as_ref().search(query_vector, fetch_k, ef)?
+            };
+
+        let mut results = Vec::new();
+        for hit in hits {
+            let ext = self
+                .internal_to_external
+                .get(&hit.id)
+                .map(|e| e.as_str().to_string());
+
+            if let Some(ref external_id) = ext {
+                if let Some(f) = filter {
+                    let meta = self.metadata.get(external_id).unwrap_or(&Value::Null);
+                    if !f.matches(meta) {
+                        continue;
+                    }
+                }
+            }
+
+            results.push(QueryResult {
+                id: ext.clone(),
+                internal_id: hit.id,
+                distance: hit.distance,
+                score: hit.score,
+                metadata: ext.and_then(|e| self.metadata.get(&e).cloned()),
+            });
+
+            if results.len() >= top_k {
+                break;
+            }
+        }
+
+        let hit_ids: Vec<VectorId> = results.iter().map(|r| r.internal_id).collect();
+        self.index.record_zcolumn_access(&hit_ids);
+
+        Ok((results, explain))
+    }
+
+    pub fn zcolumn_stats(&self) -> Option<serde_json::Value> {
+        let IndexBackend::ZColumn(z) = &self.index else {
+            return None;
+        };
+        let stats = z.search_stats();
+        Some(serde_json::json!({
+            "revert_count": stats.revert_count,
+            "columns_scanned": stats.columns_scanned,
+            "compaction_events": z.compaction_events(),
+            "column_count": z.columns().len(),
+            "vector_count": z.len(),
+            "fractal_layers": z.grid().num_layers(),
+        }))
     }
 
     pub fn persist(&mut self) -> Result<()> {

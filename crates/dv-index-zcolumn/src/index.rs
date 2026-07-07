@@ -1,9 +1,12 @@
 use crate::column::ColumnStack;
 use crate::compact::CompactionEngine;
-use crate::grid::{project_2d, ColumnPath, FractalGrid};
+use crate::explain::QueryExplain;
+use crate::grid::{ColumnPath, FractalGrid};
+use crate::projection::RoutingProjection;
 use crate::quant::QuantTier;
 use crate::search::{RevertBeamSearch, SearchStats};
 use dv_index_api::VectorIndex;
+use dv_metrics::distance;
 use dv_types::{DistanceMetric, Result, SearchHit, TopolseaError, Vector, VectorId, ZColumnConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,6 +18,8 @@ pub struct ZColumnIndex {
     metric: DistanceMetric,
     config: ZColumnConfig,
     grid: FractalGrid,
+    #[serde(default)]
+    projection: RoutingProjection,
     vectors: HashMap<VectorId, Vec<f32>>,
     columns: HashMap<String, ColumnStack>,
     #[serde(skip)]
@@ -34,6 +39,7 @@ impl Clone for ZColumnIndex {
             metric: self.metric,
             config: self.config.clone(),
             grid: self.grid.clone(),
+            projection: self.projection.clone(),
             vectors: self.vectors.clone(),
             columns: self.columns.clone(),
             query_count: AtomicU64::new(self.query_count.load(Ordering::Relaxed)),
@@ -47,11 +53,13 @@ impl Clone for ZColumnIndex {
 impl ZColumnIndex {
     pub fn new(dimension: usize, metric: DistanceMetric, config: ZColumnConfig) -> Self {
         let grid = FractalGrid::new(config.outer_grid, config.max_layers, config.pitch_ratio);
+        let projection = RoutingProjection::new(dimension, config.projection_seed);
         Self {
             dimension,
             metric,
             config,
             grid,
+            projection,
             vectors: HashMap::new(),
             columns: HashMap::new(),
             query_count: AtomicU64::new(0),
@@ -66,12 +74,90 @@ impl ZColumnIndex {
     }
 
     fn assign_cell(&self, vector: &[f32]) -> (u8, u16, u16) {
-        let (px, py) = project_2d(vector);
+        let (px, py) = self.projection.project(vector);
         let cell = self
             .grid
             .deepest_cell(px, py)
             .unwrap_or(crate::grid::CellCoord::new(0, 0, 0));
         cell.key()
+    }
+
+    fn hybrid_rerank(
+        &self,
+        query: &[f32],
+        candidates: Vec<(VectorId, f32)>,
+        top_k: usize,
+    ) -> Vec<(VectorId, f32)> {
+        let mut scored: Vec<(VectorId, f32)> = candidates
+            .into_iter()
+            .filter_map(|(id, _)| {
+                self.vectors
+                    .get(&id)
+                    .map(|v| (id, distance(self.metric, query, v)))
+            })
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+        scored
+    }
+
+    /// Re-insert all vectors from a cold store (disaster recovery).
+    pub fn rebuild_from_vectors(&mut self, records: &[(VectorId, Vec<f32>)]) -> Result<()> {
+        self.vectors.clear();
+        self.columns.clear();
+        for &(id, ref vec) in records {
+            self.insert(id, Vector::new(vec.clone()))?;
+        }
+        Ok(())
+    }
+
+    pub fn search_with_explain(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        ef: usize,
+    ) -> Result<(Vec<SearchHit>, QueryExplain)> {
+        if query.len() != self.dimension {
+            return Err(TopolseaError::DimensionMismatch {
+                expected: self.dimension,
+                got: query.len(),
+            });
+        }
+        if self.vectors.is_empty() || top_k == 0 {
+            return Ok((Vec::new(), QueryExplain::new("empty")));
+        }
+
+        let pool = top_k
+            .saturating_mul(self.config.hybrid_rerank_pool.max(1))
+            .max(top_k);
+        let ef = ef.max(pool).max(self.config.ef_search);
+        let columns = self.column_list();
+        let mut stats = SearchStats::default();
+        let mut searcher = RevertBeamSearch::new(
+            &self.grid,
+            &columns,
+            &self.vectors,
+            self.metric,
+            self.dimension,
+            &mut stats,
+        );
+        let (coarse, mut explain) = searcher.run_with_explain(query, pool, ef);
+        let refined = self.hybrid_rerank(query, coarse, top_k);
+        if self.config.hybrid_rerank_pool > 1 {
+            explain.strategy = "predictive_revert_hybrid_rerank".into();
+        }
+
+        self.revert_count
+            .fetch_add(stats.revert_count, Ordering::Relaxed);
+        self.columns_scanned
+            .fetch_add(stats.columns_scanned, Ordering::Relaxed);
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+
+        let hits = refined
+            .into_iter()
+            .map(|(id, dist)| SearchHit::new(id, dist))
+            .collect();
+        Ok((hits, explain))
     }
 
     pub fn rebalance(&mut self) {
@@ -148,6 +234,9 @@ impl ZColumnIndex {
         idx.revert_count = AtomicU64::new(0);
         idx.columns_scanned = AtomicU64::new(0);
         idx.compaction = CompactionEngine::new();
+        if idx.projection.dimension() != idx.dimension {
+            idx.projection = RoutingProjection::new(idx.dimension, idx.config.projection_seed);
+        }
         Ok(idx)
     }
 
@@ -205,39 +294,8 @@ impl VectorIndex for ZColumnIndex {
     }
 
     fn search(&self, query: &[f32], top_k: usize, ef: usize) -> Result<Vec<SearchHit>> {
-        if query.len() != self.dimension {
-            return Err(TopolseaError::DimensionMismatch {
-                expected: self.dimension,
-                got: query.len(),
-            });
-        }
-        if self.vectors.is_empty() || top_k == 0 {
-            return Ok(Vec::new());
-        }
-
-        let ef = ef.max(top_k).max(self.config.ef_search);
-        let columns = self.column_list();
-        let mut stats = SearchStats::default();
-        let mut searcher = RevertBeamSearch::new(
-            &self.grid,
-            &columns,
-            &self.vectors,
-            self.metric,
-            self.dimension,
-            &mut stats,
-        );
-        let results = searcher.run(query, top_k, ef);
-
-        self.revert_count
-            .fetch_add(stats.revert_count, Ordering::Relaxed);
-        self.columns_scanned
-            .fetch_add(stats.columns_scanned, Ordering::Relaxed);
-        self.query_count.fetch_add(1, Ordering::Relaxed);
-
-        Ok(results
-            .into_iter()
-            .map(|(id, dist)| SearchHit::new(id, dist))
-            .collect())
+        self.search_with_explain(query, top_k, ef)
+            .map(|(hits, _)| hits)
     }
 
     fn contains(&self, id: VectorId) -> bool {
@@ -282,5 +340,19 @@ mod tests {
         let bytes = idx.to_bytes().unwrap();
         let loaded = ZColumnIndex::from_bytes(&bytes).unwrap();
         assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn search_explain_returns_paths() {
+        let mut idx = ZColumnIndex::new(8, DistanceMetric::Cosine, ZColumnConfig::default());
+        for i in 0..20u64 {
+            let v: Vec<f32> = (0..8)
+                .map(|d| (i as f32 * 0.1 + d as f32 * 0.01).sin())
+                .collect();
+            idx.insert(VectorId(i), Vector::new(v)).unwrap();
+        }
+        let (hits, explain) = idx.search_with_explain(&[0.1; 8], 3, 32).unwrap();
+        assert!(!hits.is_empty());
+        assert!(!explain.column_paths.is_empty());
     }
 }

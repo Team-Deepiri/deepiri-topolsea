@@ -122,6 +122,61 @@ impl PyCollection {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         Ok(())
     }
+
+    #[pyo3(signature = (query_vector, top_k=10, filter=None, ef=64))]
+    fn explain_query(
+        &self,
+        py: Python<'_>,
+        query_vector: Vec<f32>,
+        top_k: usize,
+        filter: Option<&Bound<'_, PyAny>>,
+        ef: usize,
+    ) -> PyResult<PyObject> {
+        let filter_rust = filter.map(|f| python_filter_to_rust(f)).transpose()?;
+        let mut db = self.db.lock().unwrap();
+        let col = db
+            .get_collection(&self.name)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+        let (results, explain) = col
+            .query_explain(&query_vector, top_k, filter_rust.as_ref(), ef)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+        let dict = PyDict::new_bound(py);
+        let list = PyList::empty_bound(py);
+        for r in results {
+            let item = PyDict::new_bound(py);
+            item.set_item("id", r.id)?;
+            item.set_item("distance", r.distance)?;
+            item.set_item("score", r.score)?;
+            if let Some(meta) = r.metadata {
+                item.set_item("metadata", json_to_python(py, &meta)?)?;
+            }
+            list.append(item)?;
+        }
+        dict.set_item("results", list)?;
+        dict.set_item(
+            "explain",
+            json_to_python(
+                py,
+                &serde_json::to_value(explain).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+                })?,
+            )?,
+        )?;
+        Ok(dict.into())
+    }
+
+    fn zcolumn_stats(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let mut db = self.db.lock().unwrap();
+        let col = db
+            .get_collection(&self.name)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        match col.zcolumn_stats() {
+            Some(v) => json_to_python(py, &v),
+            None => Ok(py.None()),
+        }
+    }
 }
 
 fn python_filter_to_rust(filter: &Bound<'_, PyAny>) -> PyResult<Filter> {

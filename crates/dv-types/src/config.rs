@@ -38,6 +38,10 @@ pub struct ZColumnConfig {
     pub pitch_ratio: f32,
     pub rebalance_interval: u64,
     pub ef_search: usize,
+    #[serde(default)]
+    pub projection_seed: u64,
+    #[serde(default)]
+    pub hybrid_rerank_pool: usize,
 }
 
 impl Default for ZColumnConfig {
@@ -48,6 +52,8 @@ impl Default for ZColumnConfig {
             pitch_ratio: 0.5,
             rebalance_interval: 1000,
             ef_search: 64,
+            projection_seed: 42,
+            hybrid_rerank_pool: 3,
         }
     }
 }
