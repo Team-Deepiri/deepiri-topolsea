@@ -2,8 +2,8 @@ use crate::column::ColumnStack;
 use crate::compact::CompactionEngine;
 use crate::explain::QueryExplain;
 use crate::grid::{CellCoord, ColumnPath, FractalGrid};
-use crate::projection::RoutingProjection;
 use crate::predictor::{LayerPredictor, PredictorState};
+use crate::projection::RoutingProjection;
 use crate::search::{RevertBeamSearch, SearchStats};
 use dv_index_api::VectorIndex;
 use dv_metrics::distance;
@@ -12,8 +12,8 @@ use dv_types::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 
 #[derive(Serialize, Deserialize)]
 pub struct ZColumnIndex {
@@ -25,7 +25,10 @@ pub struct ZColumnIndex {
     projection: RoutingProjection,
     vectors: HashMap<VectorId, Vec<f32>>,
     columns: HashMap<String, ColumnStack>,
-    #[serde(default = "predictor_state_cell::default_predictor_lock", with = "predictor_state_cell")]
+    #[serde(
+        default = "predictor_state_cell::default_predictor_lock",
+        with = "predictor_state_cell"
+    )]
     predictor_state: RwLock<PredictorState>,
     #[serde(skip)]
     query_count: AtomicU64,

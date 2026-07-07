@@ -254,8 +254,10 @@ fn distributed_shard_fanout_via_http() {
     .unwrap();
 
     let mut db = Database::open(dir.path()).unwrap();
-    db.set_shard_endpoint("remote", 0, server0.base_url()).unwrap();
-    db.set_shard_endpoint("remote", 1, server1.base_url()).unwrap();
+    db.set_shard_endpoint("remote", 0, server0.base_url())
+        .unwrap();
+    db.set_shard_endpoint("remote", 1, server1.base_url())
+        .unwrap();
 
     let q = vec![0.1; 8];
     let hits = db.query_sharded("remote", &q, 5, None, 64).unwrap();

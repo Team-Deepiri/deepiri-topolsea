@@ -92,7 +92,11 @@ fn prove_scale(config: &ProveConfig, n: usize) -> ScaleProof {
     let vectors = random_unit_vectors(&mut rng, n, config.dimension);
 
     let mut flat = FlatIndex::new(config.dimension, DistanceMetric::Cosine);
-    let mut hnsw = HnswIndex::new(config.dimension, DistanceMetric::Cosine, HnswConfig::default());
+    let mut hnsw = HnswIndex::new(
+        config.dimension,
+        DistanceMetric::Cosine,
+        HnswConfig::default(),
+    );
     let mut zcol = ZColumnIndex::new(
         config.dimension,
         DistanceMetric::Cosine,
@@ -106,7 +110,8 @@ fn prove_scale(config: &ProveConfig, n: usize) -> ScaleProof {
         zcol.insert(id, Vector::new(v.clone())).unwrap();
     }
 
-    let queries: Vec<Vec<f32>> = random_unit_vectors(&mut rng, config.num_queries, config.dimension);
+    let queries: Vec<Vec<f32>> =
+        random_unit_vectors(&mut rng, config.num_queries, config.dimension);
     let ground = build_ground_truth(&flat, &queries, config.k);
 
     let flat_proof = bench_index(
@@ -129,7 +134,8 @@ fn prove_scale(config: &ProveConfig, n: usize) -> ScaleProof {
     );
     let zcol_proof = bench_zcolumn(&zcol, &queries, &ground, config.k, config.ef);
 
-    let zcolumn_vs_hnsw_recall_ratio = zcol_proof.recall_at_k_mean / hnsw_proof.recall_at_k_mean.max(1e-6);
+    let zcolumn_vs_hnsw_recall_ratio =
+        zcol_proof.recall_at_k_mean / hnsw_proof.recall_at_k_mean.max(1e-6);
     let zcolumn_vs_hnsw_qps_ratio = zcol_proof.qps / hnsw_proof.qps.max(1e-6);
     let zcolumn_vs_hnsw_footprint_ratio =
         zcol_proof.index_bytes as f32 / hnsw_proof.index_bytes.max(1) as f32;

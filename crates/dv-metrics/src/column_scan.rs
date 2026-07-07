@@ -1,9 +1,7 @@
 //! SIMD-friendly quantized column scan — avoids per-vector decode allocations on hot paths.
 use dv_types::{DistanceMetric, QuantTier};
 
-use crate::{
-    cosine_distance, dot_product, l2_squared, l2_squared_u16, l2_squared_u8, simd_l2_u8,
-};
+use crate::{cosine_distance, dot_product, l2_squared, l2_squared_u16, l2_squared_u8, simd_l2_u8};
 
 /// Score every payload in a column against `query` without allocating decoded vectors.
 pub fn scan_column_distances(

@@ -155,18 +155,19 @@ impl Database {
 
         let target_shards = Self::resolve_target_shards(&manifest, &routing, query_vector);
 
-        let remote_targets: Vec<_> = dv_shard_remote::endpoints_for_shards(&target_shards, &cluster.endpoints)
-            .into_iter()
-            .map(|(shard_id, endpoint)| dv_shard_remote::ShardFanoutRequest {
-                shard_id,
-                endpoint,
-                request: dv_shard_remote::ShardQueryRequest {
-                    vector: query_vector.to_vec(),
-                    top_k,
-                    ef,
-                },
-            })
-            .collect();
+        let remote_targets: Vec<_> =
+            dv_shard_remote::endpoints_for_shards(&target_shards, &cluster.endpoints)
+                .into_iter()
+                .map(|(shard_id, endpoint)| dv_shard_remote::ShardFanoutRequest {
+                    shard_id,
+                    endpoint,
+                    request: dv_shard_remote::ShardQueryRequest {
+                        vector: query_vector.to_vec(),
+                        top_k,
+                        ef,
+                    },
+                })
+                .collect();
 
         let mut merged = Vec::new();
 

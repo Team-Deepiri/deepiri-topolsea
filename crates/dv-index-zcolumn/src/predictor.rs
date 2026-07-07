@@ -148,9 +148,19 @@ impl LayerPredictor {
                 })
                 .fold(f32::MAX, f32::min);
 
-            let hit_ema = self.state.layer_hit_ema.get(layer as usize).copied().unwrap_or(0.5);
+            let hit_ema = self
+                .state
+                .layer_hit_ema
+                .get(layer as usize)
+                .copied()
+                .unwrap_or(0.5);
             let features = Self::layer_features(query, layer, max_layer, min_dist, hit_ema);
-            let bias = self.state.layer_bias.get(layer as usize).copied().unwrap_or(0.0);
+            let bias = self
+                .state
+                .layer_bias
+                .get(layer as usize)
+                .copied()
+                .unwrap_or(0.0);
             let score = Self::score_layer(&features, bias, &self.state.feature_weights);
 
             if score > best_score {
@@ -271,13 +281,7 @@ mod tests {
         explain.entry_layer = 2;
         explain.deepest_layer_reached = 2;
         explain.revert_count = 3;
-        predictor.observe(
-            &[1.0, 0.0],
-            &grid,
-            &[&col],
-            DistanceMetric::L2,
-            &explain,
-        );
+        predictor.observe(&[1.0, 0.0], &grid, &[&col], DistanceMetric::L2, &explain);
         assert_ne!(predictor.state().feature_weights, before);
         assert_eq!(predictor.state().queries_trained, 1);
     }

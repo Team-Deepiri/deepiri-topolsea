@@ -116,8 +116,7 @@ impl<'a> RevertBeamSearch<'a> {
                 self.stats.columns_scanned += 1;
                 visited_cells.insert(cell.key());
                 if let Some(col) = self.column_at(*cell) {
-                    found_any |=
-                        self.scan_column(col, query, &mut visited, &mut heap, false);
+                    found_any |= self.scan_column(col, query, &mut visited, &mut heap, false);
                 }
             }
 
@@ -169,19 +168,9 @@ impl<'a> RevertBeamSearch<'a> {
             beam_radius: fallback_beam_radius,
             max_rings: max_fallback_rings,
         };
-        self.neighborhood_fallback(
-            fb,
-            &mut visited,
-            &mut visited_cells,
-            &mut heap,
-        );
+        self.neighborhood_fallback(fb, &mut visited, &mut visited_cells, &mut heap);
 
-        self.ranked_column_fallback(
-            fb,
-            &mut visited,
-            &mut visited_cells,
-            &mut heap,
-        );
+        self.ranked_column_fallback(fb, &mut visited, &mut visited_cells, &mut heap);
 
         explain.revert_count = self.stats.revert_count;
         explain.columns_scanned = self.stats.columns_scanned;

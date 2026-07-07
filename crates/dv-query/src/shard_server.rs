@@ -31,9 +31,7 @@ impl ShardQueryServer {
                 e.to_string(),
             ))
         })?;
-        listener
-            .set_nonblocking(true)
-            .map_err(TopolseaError::Io)?;
+        listener.set_nonblocking(true).map_err(TopolseaError::Io)?;
         let port = listener.local_addr().map_err(TopolseaError::Io)?.port();
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_flag = shutdown.clone();
@@ -128,9 +126,7 @@ fn handle_connection(
     }
 
     let mut body = vec![0u8; content_length];
-    reader
-        .read_exact(&mut body)
-        .map_err(TopolseaError::Io)?;
+    reader.read_exact(&mut body).map_err(TopolseaError::Io)?;
     let query_req: ShardQueryRequest =
         serde_json::from_slice(&body).map_err(TopolseaError::Serde)?;
 
@@ -147,7 +143,11 @@ fn handle_connection(
     Ok(())
 }
 
-fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), TopolseaError> {
+fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+) -> Result<(), TopolseaError> {
     let status_text = match status {
         200 => "OK",
         400 => "Bad Request",
