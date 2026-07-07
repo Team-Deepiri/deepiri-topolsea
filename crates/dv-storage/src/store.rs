@@ -254,6 +254,10 @@ impl StorageEngine {
         if routing.exists() {
             fs::remove_file(routing)?;
         }
+        let cluster = self.shard_cluster_path(logical_name);
+        if cluster.exists() {
+            fs::remove_file(cluster)?;
+        }
         Ok(())
     }
 
@@ -278,6 +282,31 @@ impl StorageEngine {
         let path = self.shard_routing_path(logical_name);
         if !path.exists() {
             return Ok(crate::shard_format::ShardRoutingIndex::default());
+        }
+        read_json(path)
+    }
+
+    fn shard_cluster_path(&self, logical_name: &str) -> PathBuf {
+        self.shards_dir()
+            .join(format!("{logical_name}.cluster.json"))
+    }
+
+    pub fn write_shard_cluster(
+        &self,
+        logical_name: &str,
+        config: &crate::shard_format::ShardClusterConfig,
+    ) -> Result<()> {
+        fs::create_dir_all(self.shards_dir())?;
+        write_json(self.shard_cluster_path(logical_name), config)
+    }
+
+    pub fn read_shard_cluster(
+        &self,
+        logical_name: &str,
+    ) -> Result<crate::shard_format::ShardClusterConfig> {
+        let path = self.shard_cluster_path(logical_name);
+        if !path.exists() {
+            return Ok(crate::shard_format::ShardClusterConfig::default());
         }
         read_json(path)
     }

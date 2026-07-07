@@ -1,4 +1,4 @@
-use dv_storage::{ShardManifest, StorageEngine};
+use dv_storage::{ShardClusterConfig, ShardManifest, StorageEngine};
 use dv_types::{CollectionConfig, DistanceMetric, IndexKind, Result, TopolseaError, VectorId};
 use std::collections::HashMap;
 use std::path::Path;
@@ -151,8 +151,63 @@ impl Database {
     ) -> Result<Vec<QueryResult>> {
         let manifest = self.storage.read_shard_manifest(logical_name)?;
         let routing = self.storage.read_shard_routing(logical_name)?;
+        let cluster = self.storage.read_shard_cluster(logical_name)?;
 
-        let target_shards: Vec<usize> = if manifest.index_kind == IndexKind::ZColumn {
+        let target_shards = Self::resolve_target_shards(&manifest, &routing, query_vector);
+
+        let remote_targets: Vec<_> = dv_shard_remote::endpoints_for_shards(&target_shards, &cluster.endpoints)
+            .into_iter()
+            .map(|(shard_id, endpoint)| dv_shard_remote::ShardFanoutRequest {
+                shard_id,
+                endpoint,
+                request: dv_shard_remote::ShardQueryRequest {
+                    vector: query_vector.to_vec(),
+                    top_k,
+                    ef,
+                },
+            })
+            .collect();
+
+        let mut merged = Vec::new();
+
+        if !remote_targets.is_empty() {
+            let remote = dv_shard_remote::fan_out_shard_queries(&remote_targets, 30_000)
+                .map_err(|e| TopolseaError::InvalidConfig(e.to_string()))?;
+            for partial in remote {
+                for hit in partial.hits {
+                    merged.push(QueryResult {
+                        id: hit.id.clone(),
+                        internal_id: hit.vector_id(),
+                        distance: hit.distance,
+                        score: hit.score,
+                        metadata: None,
+                    });
+                }
+            }
+        }
+
+        let remote_shard_ids: std::collections::HashSet<_> =
+            remote_targets.iter().map(|t| t.shard_id).collect();
+
+        for shard_id in target_shards {
+            if remote_shard_ids.contains(&shard_id) {
+                continue;
+            }
+            let physical = manifest.physical_name(shard_id);
+            let col = self.get_collection(&physical)?;
+            let mut partial = col.query(query_vector, top_k, filter, ef)?;
+            merged.append(&mut partial);
+        }
+
+        Ok(merge_shard_results(merged, top_k))
+    }
+
+    fn resolve_target_shards(
+        manifest: &ShardManifest,
+        routing: &dv_storage::ShardRoutingIndex,
+        query_vector: &[f32],
+    ) -> Vec<usize> {
+        if manifest.index_kind == IndexKind::ZColumn {
             let route = dv_index_zcolumn::ShardQueryRoute {
                 dimension: manifest.dimension,
                 projection_seed: manifest.zcolumn.projection_seed,
@@ -170,16 +225,30 @@ impl Database {
             ids
         } else {
             (0..manifest.num_shards).collect()
-        };
-
-        let mut merged = Vec::new();
-        for shard_id in target_shards {
-            let physical = manifest.physical_name(shard_id);
-            let col = self.get_collection(&physical)?;
-            let mut partial = col.query(query_vector, top_k, filter, ef)?;
-            merged.append(&mut partial);
         }
-        Ok(merge_shard_results(merged, top_k))
+    }
+
+    /// Register a remote HTTP endpoint for a physical shard (cross-node fan-out).
+    pub fn set_shard_endpoint(
+        &mut self,
+        logical_name: &str,
+        shard_id: usize,
+        base_url: impl Into<String>,
+    ) -> Result<()> {
+        let manifest = self.storage.read_shard_manifest(logical_name)?;
+        if shard_id >= manifest.num_shards {
+            return Err(TopolseaError::InvalidConfig(format!(
+                "shard_id {shard_id} out of range (num_shards={})",
+                manifest.num_shards
+            )));
+        }
+        let mut cluster = self.storage.read_shard_cluster(logical_name)?;
+        cluster.endpoints.insert(shard_id, base_url.into());
+        self.storage.write_shard_cluster(logical_name, &cluster)
+    }
+
+    pub fn shard_cluster_config(&self, logical_name: &str) -> Result<ShardClusterConfig> {
+        self.storage.read_shard_cluster(logical_name)
     }
 
     pub fn query_sharded_batch(

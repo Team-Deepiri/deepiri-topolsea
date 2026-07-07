@@ -48,6 +48,12 @@ pub struct ShardRoutingIndex {
     pub beam_radius: u16,
 }
 
+/// Remote shard node endpoints for cross-node fan-out (`shard_id` → base URL).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ShardClusterConfig {
+    pub endpoints: std::collections::HashMap<usize, String>,
+}
+
 impl ShardRoutingIndex {
     pub fn new(beam_radius: u16) -> Self {
         Self {

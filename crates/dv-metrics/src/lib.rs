@@ -2,6 +2,7 @@ mod batch;
 mod column_scan;
 mod quantized;
 mod scalar;
+mod simd_l2_u8;
 
 pub use batch::{batch_distances, distance};
 pub use column_scan::scan_column_distances;

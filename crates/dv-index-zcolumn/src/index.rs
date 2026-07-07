@@ -3,6 +3,7 @@ use crate::compact::CompactionEngine;
 use crate::explain::QueryExplain;
 use crate::grid::{CellCoord, ColumnPath, FractalGrid};
 use crate::projection::RoutingProjection;
+use crate::predictor::{LayerPredictor, PredictorState};
 use crate::search::{RevertBeamSearch, SearchStats};
 use dv_index_api::VectorIndex;
 use dv_metrics::distance;
@@ -11,6 +12,7 @@ use dv_types::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Serialize, Deserialize)]
@@ -23,6 +25,8 @@ pub struct ZColumnIndex {
     projection: RoutingProjection,
     vectors: HashMap<VectorId, Vec<f32>>,
     columns: HashMap<String, ColumnStack>,
+    #[serde(default = "predictor_state_cell::default_predictor_lock", with = "predictor_state_cell")]
+    predictor_state: RwLock<PredictorState>,
     #[serde(skip)]
     query_count: AtomicU64,
     #[serde(skip)]
@@ -43,6 +47,7 @@ impl Clone for ZColumnIndex {
             projection: self.projection.clone(),
             vectors: self.vectors.clone(),
             columns: self.columns.clone(),
+            predictor_state: RwLock::new(self.predictor_state.read().unwrap().clone()),
             query_count: AtomicU64::new(self.query_count.load(Ordering::Relaxed)),
             revert_count: AtomicU64::new(self.revert_count.load(Ordering::Relaxed)),
             columns_scanned: AtomicU64::new(self.columns_scanned.load(Ordering::Relaxed)),
@@ -63,6 +68,7 @@ impl ZColumnIndex {
             projection,
             vectors: HashMap::new(),
             columns: HashMap::new(),
+            predictor_state: RwLock::new(PredictorState::default()),
             query_count: AtomicU64::new(0),
             revert_count: AtomicU64::new(0),
             columns_scanned: AtomicU64::new(0),
@@ -132,11 +138,26 @@ impl ZColumnIndex {
             return Ok((Vec::new(), QueryExplain::new("empty")));
         }
 
-        let pool = top_k
+        let base_pool = top_k
             .saturating_mul(self.config.hybrid_rerank_pool.max(1))
             .max(top_k);
-        let ef = ef.max(pool).max(self.config.ef_search);
+        let scale_pool = (self.vectors.len() / 20)
+            .clamp(base_pool, 512)
+            .max(ef.min(512));
+        let coarse_pool = base_pool.max(scale_pool);
+        let ef = ef.max(coarse_pool).max(self.config.ef_search);
+        let (qx, qy) = self.projection.project(query);
+        let params = crate::search::SearchParams {
+            coarse_pool,
+            recall_k: top_k,
+            ef,
+            query_xy: (qx, qy),
+            fallback_beam_radius: self.config.fallback_beam_radius,
+            max_fallback_rings: self.config.max_fallback_rings,
+        };
         let mut stats = SearchStats::default();
+        let mut predictor =
+            LayerPredictor::with_state(self.predictor_state.read().unwrap().clone());
         let mut searcher = RevertBeamSearch::new(
             &self.grid,
             &self.columns,
@@ -144,8 +165,12 @@ impl ZColumnIndex {
             self.metric,
             self.dimension,
             &mut stats,
+            &mut predictor,
         );
-        let (coarse, mut explain) = searcher.run_with_explain(query, pool, ef);
+        let (coarse, mut explain) = searcher.run_with_explain(query, params);
+        let col_refs: Vec<&ColumnStack> = self.columns.values().collect();
+        predictor.observe(query, &self.grid, &col_refs, self.metric, &explain);
+        *self.predictor_state.write().unwrap() = predictor.state().clone();
         let refined = self.hybrid_rerank(query, coarse, top_k);
         if self.config.hybrid_rerank_pool > 1 {
             explain.strategy = "predictive_revert_hybrid_rerank".into();
@@ -242,6 +267,32 @@ impl ZColumnIndex {
 
     pub fn ids(&self) -> impl Iterator<Item = VectorId> + '_ {
         self.vectors.keys().copied()
+    }
+}
+
+mod predictor_state_cell {
+    use super::PredictorState;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::RwLock;
+
+    pub fn default_predictor_lock() -> RwLock<PredictorState> {
+        RwLock::new(PredictorState::default())
+    }
+
+    pub fn serialize<S>(lock: &RwLock<PredictorState>, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        lock.read()
+            .map_err(|e| serde::ser::Error::custom(e.to_string()))?
+            .serialize(ser)
+    }
+
+    pub fn deserialize<'de, D>(de: D) -> Result<RwLock<PredictorState>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        PredictorState::deserialize(de).map(RwLock::new)
     }
 }
 

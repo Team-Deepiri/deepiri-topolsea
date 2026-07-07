@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+shard-server = []
+
 [dependencies]
 dv-index-api = { path = "../dv-index-api" }
 dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
 dv-index-zcolumn = { path = "../dv-index-zcolumn" }
 dv-metadata = { path = "../dv-metadata" }
+dv-shard-remote = { path = "../dv-shard-remote" }
 dv-storage = { path = "../dv-storage" }
 dv-types = { path = "../dv-types" }
 serde = { workspace = true }

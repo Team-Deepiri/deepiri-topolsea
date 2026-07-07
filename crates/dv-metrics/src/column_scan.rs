@@ -1,7 +1,9 @@
 //! SIMD-friendly quantized column scan — avoids per-vector decode allocations on hot paths.
 use dv_types::{DistanceMetric, QuantTier};
 
-use crate::{cosine_distance, dot_product, l2_squared, l2_squared_u16, l2_squared_u8};
+use crate::{
+    cosine_distance, dot_product, l2_squared, l2_squared_u16, l2_squared_u8, simd_l2_u8,
+};
 
 /// Score every payload in a column against `query` without allocating decoded vectors.
 pub fn scan_column_distances(
@@ -12,10 +14,19 @@ pub fn scan_column_distances(
     dimension: usize,
 ) -> Vec<f32> {
     match tier {
-        QuantTier::U8 => payloads
-            .iter()
-            .map(|p| distance_u8(metric, query, p))
-            .collect(),
+        QuantTier::U8 => {
+            if metric == DistanceMetric::L2 {
+                payloads
+                    .iter()
+                    .map(|p| simd_l2_u8::l2_squared_u8(query, p))
+                    .collect()
+            } else {
+                payloads
+                    .iter()
+                    .map(|p| distance_u8(metric, query, p))
+                    .collect()
+            }
+        }
         QuantTier::U16 => payloads
             .iter()
             .map(|p| distance_u16(metric, query, p, dimension))

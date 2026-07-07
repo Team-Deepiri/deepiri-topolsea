@@ -43,6 +43,18 @@ fn default_decay_half_life_ms() -> u64 {
     3_600_000
 }
 
+fn default_fallback_beam_radius() -> u16 {
+    2
+}
+
+fn default_max_fallback_rings() -> u16 {
+    8
+}
+
+fn default_max_fallback_columns() -> usize {
+    96
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZColumnConfig {
     pub outer_grid: (u16, u16),
@@ -56,19 +68,31 @@ pub struct ZColumnConfig {
     pub hybrid_rerank_pool: usize,
     #[serde(default = "default_decay_half_life_ms")]
     pub decay_half_life_ms: u64,
+    /// Initial fractal ring radius for neighborhood fallback (cells, not shards).
+    #[serde(default = "default_fallback_beam_radius")]
+    pub fallback_beam_radius: u16,
+    /// Max ring expansion before centroid-ranked column cap kicks in.
+    #[serde(default = "default_max_fallback_rings")]
+    pub max_fallback_rings: u16,
+    /// Cap on extra columns scanned in ranked fallback (never full corpus).
+    #[serde(default = "default_max_fallback_columns")]
+    pub max_fallback_columns: usize,
 }
 
 impl Default for ZColumnConfig {
     fn default() -> Self {
         Self {
-            outer_grid: (8, 8),
+            outer_grid: (16, 16),
             max_layers: 3,
             pitch_ratio: 0.5,
             rebalance_interval: 1000,
-            ef_search: 64,
+            ef_search: 128,
             projection_seed: 42,
-            hybrid_rerank_pool: 3,
+            hybrid_rerank_pool: 5,
             decay_half_life_ms: 3_600_000,
+            fallback_beam_radius: 2,
+            max_fallback_rings: 8,
+            max_fallback_columns: 96,
         }
     }
 }

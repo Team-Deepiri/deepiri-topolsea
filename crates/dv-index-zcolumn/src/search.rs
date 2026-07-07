@@ -14,6 +14,25 @@ pub struct SearchStats {
     pub columns_scanned: u64,
 }
 
+/// Tunable search parameters (from `ZColumnConfig` + query planner).
+#[derive(Debug, Clone, Copy)]
+pub struct SearchParams {
+    pub coarse_pool: usize,
+    pub recall_k: usize,
+    pub ef: usize,
+    pub query_xy: (f32, f32),
+    pub fallback_beam_radius: u16,
+    pub max_fallback_rings: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FallbackCtx<'a> {
+    query_xy: (f32, f32),
+    query: &'a [f32],
+    beam_radius: u16,
+    max_rings: u16,
+}
+
 /// Beam search with callback-reverse backtracking on miss.
 pub struct RevertBeamSearch<'a> {
     grid: &'a FractalGrid,
@@ -21,7 +40,7 @@ pub struct RevertBeamSearch<'a> {
     vectors: &'a HashMap<VectorId, Vec<f32>>,
     metric: DistanceMetric,
     dimension: usize,
-    predictor: LayerPredictor,
+    predictor: &'a mut LayerPredictor,
     stats: &'a mut SearchStats,
 }
 
@@ -33,6 +52,7 @@ impl<'a> RevertBeamSearch<'a> {
         metric: DistanceMetric,
         dimension: usize,
         stats: &'a mut SearchStats,
+        predictor: &'a mut LayerPredictor,
     ) -> Self {
         Self {
             grid,
@@ -40,23 +60,31 @@ impl<'a> RevertBeamSearch<'a> {
             vectors,
             metric,
             dimension,
-            predictor: LayerPredictor::default_predictor(),
+            predictor,
             stats,
         }
     }
 
-    pub fn run(&mut self, query: &[f32], top_k: usize, ef: usize) -> Vec<(VectorId, f32)> {
-        self.run_with_explain(query, top_k, ef).0
+    pub fn run(&mut self, query: &[f32], params: SearchParams) -> Vec<(VectorId, f32)> {
+        self.run_with_explain(query, params).0
     }
 
     pub fn run_with_explain(
         &mut self,
         query: &[f32],
-        top_k: usize,
-        ef: usize,
+        params: SearchParams,
     ) -> (Vec<(VectorId, f32)>, QueryExplain) {
+        let SearchParams {
+            coarse_pool,
+            recall_k,
+            ef,
+            query_xy,
+            fallback_beam_radius,
+            max_fallback_rings,
+        } = params;
+
         let mut explain = QueryExplain::new("predictive_revert_beam");
-        if self.columns.is_empty() || top_k == 0 {
+        if self.columns.is_empty() || recall_k == 0 {
             return (Vec::new(), explain);
         }
 
@@ -66,8 +94,9 @@ impl<'a> RevertBeamSearch<'a> {
             .entry_layer(query, self.grid, &col_refs, self.metric);
         explain.entry_layer = start_layer;
 
-        let beam_width = ef.max(top_k).max(1);
-        let mut heap = TopKHeap::new(top_k);
+        let beam_width = ef.max(recall_k).max(1);
+        let heap_cap = coarse_pool.max(recall_k);
+        let mut heap = TopKHeap::new(heap_cap);
         let mut visited: HashSet<VectorId> = HashSet::new();
         let mut revert_stack: VecDeque<CellCoord> = VecDeque::new();
         let mut visited_cells: HashSet<(u8, u16, u16)> = HashSet::new();
@@ -87,7 +116,8 @@ impl<'a> RevertBeamSearch<'a> {
                 self.stats.columns_scanned += 1;
                 visited_cells.insert(cell.key());
                 if let Some(col) = self.column_at(*cell) {
-                    found_any |= self.scan_column(col, query, &mut visited, &mut heap);
+                    found_any |=
+                        self.scan_column(col, query, &mut visited, &mut heap, false);
                 }
             }
 
@@ -109,7 +139,7 @@ impl<'a> RevertBeamSearch<'a> {
                 }
             }
 
-            if found_any && heap.len() >= top_k {
+            if found_any && heap.len() >= recall_k {
                 break;
             }
 
@@ -132,12 +162,26 @@ impl<'a> RevertBeamSearch<'a> {
             }
         }
 
-        if heap.len() < top_k {
-            explain.used_fallback_scan = true;
-            for col in self.columns.values() {
-                self.scan_column(col, query, &mut visited, &mut heap);
-            }
-        }
+        explain.used_fallback_scan = true;
+        let fb = FallbackCtx {
+            query_xy,
+            query,
+            beam_radius: fallback_beam_radius,
+            max_rings: max_fallback_rings,
+        };
+        self.neighborhood_fallback(
+            fb,
+            &mut visited,
+            &mut visited_cells,
+            &mut heap,
+        );
+
+        self.ranked_column_fallback(
+            fb,
+            &mut visited,
+            &mut visited_cells,
+            &mut heap,
+        );
 
         explain.revert_count = self.stats.revert_count;
         explain.columns_scanned = self.stats.columns_scanned;
@@ -155,13 +199,72 @@ impl<'a> RevertBeamSearch<'a> {
         (results, explain)
     }
 
-    /// Batch-scan an entire column stack (quantized SIMD path + FP32 override when resident).
+    /// Expand fractal rings around the query projection — never full corpus.
+    fn neighborhood_fallback(
+        &mut self,
+        ctx: FallbackCtx<'_>,
+        visited: &mut HashSet<VectorId>,
+        visited_cells: &mut HashSet<(u8, u16, u16)>,
+        heap: &mut TopKHeap,
+    ) {
+        let (px, py) = ctx.query_xy;
+        let mut ring = ctx.beam_radius.max(1);
+        let limit = ctx.max_rings.max(ring);
+        while ring <= limit {
+            for cell in self.grid.cells_in_neighborhood(px, py, ring) {
+                if !visited_cells.insert(cell.key()) {
+                    continue;
+                }
+                self.stats.columns_scanned += 1;
+                if let Some(col) = self.column_at(cell) {
+                    self.scan_column(col, ctx.query, visited, heap, false);
+                }
+            }
+            ring += 1;
+        }
+    }
+
+    /// Centroid-ranked column cap — bounded sweep, not O(corpus).
+    fn ranked_column_fallback(
+        &mut self,
+        ctx: FallbackCtx<'_>,
+        visited: &mut HashSet<VectorId>,
+        visited_cells: &mut HashSet<(u8, u16, u16)>,
+        heap: &mut TopKHeap,
+    ) {
+        let mut ranked: Vec<(f32, CellCoord)> = self
+            .columns
+            .values()
+            .filter_map(|c| {
+                let cell = c.cell()?;
+                if c.centroid.is_empty() {
+                    return None;
+                }
+                let dist = distance(self.metric, ctx.query, &c.centroid);
+                Some((dist, *cell))
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (_, cell) in ranked {
+            if !visited_cells.insert(cell.key()) {
+                continue;
+            }
+            self.stats.columns_scanned += 1;
+            if let Some(col) = self.column_at(cell) {
+                self.scan_column(col, ctx.query, visited, heap, false);
+            }
+        }
+    }
+
+    /// Batch-scan a column. Coarse path uses quantized SIMD only; FP32 rerank happens later.
     fn scan_column(
         &self,
         col: &ColumnStack,
         query: &[f32],
         visited: &mut HashSet<VectorId>,
         heap: &mut TopKHeap,
+        coarse_only: bool,
     ) -> bool {
         let mut found = false;
         let quantized_dists = scan_column_distances(
@@ -175,7 +278,13 @@ impl<'a> RevertBeamSearch<'a> {
             if !visited.insert(id) {
                 continue;
             }
-            let dist = if let Some(v) = self.vectors.get(&id) {
+            let dist = if coarse_only {
+                if i < quantized_dists.len() {
+                    quantized_dists[i]
+                } else {
+                    continue;
+                }
+            } else if let Some(v) = self.vectors.get(&id) {
                 distance(self.metric, query, v)
             } else if i < quantized_dists.len() {
                 quantized_dists[i]

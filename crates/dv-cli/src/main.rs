@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
-use dv_query::Database;
+use dv_bench::ProveConfig;
+use dv_query::{Database, ShardQueryServer, ShardServerConfig};
 use dv_types::{DistanceMetric, IndexKind};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -72,6 +73,21 @@ enum Commands {
         top_k: usize,
         #[arg(long)]
         sharded: bool,
+    },
+    /// Serve HTTP shard queries for a physical collection (cross-node fan-out)
+    ShardServe {
+        collection: String,
+        #[arg(long, default_value = "127.0.0.1:7700")]
+        bind: String,
+    },
+    /// Run commercial proof report (recall, QPS, footprint) — bench-only, no hot-path cost hooks
+    Prove {
+        #[arg(long)]
+        million: bool,
+        #[arg(long)]
+        scale: Option<usize>,
+        #[arg(long, default_value = "50")]
+        queries: usize,
     },
 }
 
@@ -246,6 +262,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+        Commands::ShardServe { collection, bind } => {
+            let server = ShardQueryServer::start(ShardServerConfig {
+                data_dir: cli.data_dir.clone(),
+                collection: collection.clone(),
+                bind_addr: bind,
+            })?;
+            println!(
+                "shard server listening on {} for collection '{collection}'",
+                server.base_url()
+            );
+            loop {
+                std::thread::park();
+            }
+        }
+        Commands::Prove {
+            million,
+            scale,
+            queries,
+        } => {
+            let mut config = ProveConfig {
+                num_queries: queries,
+                ..ProveConfig::default()
+            };
+            if let Some(s) = scale {
+                config.scales = vec![s];
+            } else if million {
+                config.scales.push(1_000_000);
+            }
+            eprintln!(
+                "running commercial proof at scales {:?} ({} queries each)...",
+                config.scales, config.num_queries
+            );
+            let report = dv_bench::run(config);
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
     }
 

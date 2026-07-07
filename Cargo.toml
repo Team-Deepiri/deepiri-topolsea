@@ -10,6 +10,7 @@ members = [
     "crates/dv-storage",
     "crates/dv-metadata",
     "crates/dv-query",
+    "crates/dv-shard-remote",
     "crates/dv-bench",
     "crates/dv-bindings-python",
     "crates/dv-cli",
