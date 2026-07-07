@@ -1,13 +1,14 @@
 use crate::column::ColumnStack;
 use crate::compact::CompactionEngine;
 use crate::explain::QueryExplain;
-use crate::grid::{ColumnPath, FractalGrid};
+use crate::grid::{CellCoord, ColumnPath, FractalGrid};
 use crate::projection::RoutingProjection;
-use crate::quant::QuantTier;
 use crate::search::{RevertBeamSearch, SearchStats};
 use dv_index_api::VectorIndex;
 use dv_metrics::distance;
-use dv_types::{DistanceMetric, Result, SearchHit, TopolseaError, Vector, VectorId, ZColumnConfig};
+use dv_types::{
+    DistanceMetric, QuantTier, Result, SearchHit, TopolseaError, Vector, VectorId, ZColumnConfig,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,7 +19,7 @@ pub struct ZColumnIndex {
     metric: DistanceMetric,
     config: ZColumnConfig,
     grid: FractalGrid,
-    #[serde(default)]
+    #[serde(skip)]
     projection: RoutingProjection,
     vectors: HashMap<VectorId, Vec<f32>>,
     columns: HashMap<String, ColumnStack>,
@@ -194,7 +195,7 @@ impl ZColumnIndex {
         for (_layer, stacks) in layers {
             for stack in stacks {
                 if let Some(cell) = stack.cell() {
-                    let key = Self::column_key(cell.key());
+                    let key = cell.to_string();
                     self.columns.insert(key, stack.clone());
                 }
             }
@@ -220,10 +221,6 @@ impl ZColumnIndex {
         &self.columns
     }
 
-    fn column_key(key: (u8, u16, u16)) -> String {
-        format!("{}:{}:{}", key.0, key.1, key.2)
-    }
-
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         serde_json::to_vec(self).map_err(TopolseaError::Serde)
     }
@@ -234,9 +231,7 @@ impl ZColumnIndex {
         idx.revert_count = AtomicU64::new(0);
         idx.columns_scanned = AtomicU64::new(0);
         idx.compaction = CompactionEngine::new();
-        if idx.projection.dimension() != idx.dimension {
-            idx.projection = RoutingProjection::new(idx.dimension, idx.config.projection_seed);
-        }
+        idx.projection = RoutingProjection::new(idx.dimension, idx.config.projection_seed);
         Ok(idx)
     }
 
@@ -267,7 +262,7 @@ impl VectorIndex for ZColumnIndex {
 
         let col = self
             .columns
-            .entry(Self::column_key(key))
+            .entry(CellCoord::new(key.0, key.1, key.2).to_string())
             .or_insert_with(|| ColumnStack::new(path, self.dimension, tier));
         col.push(id, &data);
         self.vectors.insert(id, data);
@@ -340,6 +335,17 @@ mod tests {
         let bytes = idx.to_bytes().unwrap();
         let loaded = ZColumnIndex::from_bytes(&bytes).unwrap();
         assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn from_bytes_rebuilds_projection() {
+        let mut idx = ZColumnIndex::new(128, DistanceMetric::Cosine, ZColumnConfig::default());
+        idx.insert(VectorId(1), Vector::new(vec![0.1; 128]))
+            .unwrap();
+        let bytes = idx.to_bytes().unwrap();
+        let loaded = ZColumnIndex::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.projection.dimension(), 128);
     }
 
     #[test]

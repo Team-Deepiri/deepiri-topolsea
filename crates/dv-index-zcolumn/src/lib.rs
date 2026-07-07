@@ -6,16 +6,16 @@ mod index;
 mod ledger;
 mod predictor;
 mod projection;
-mod quant;
 mod search;
 
 pub use column::ColumnStack;
 pub use compact::CompactionEngine;
+pub use dv_metrics::{decode, encode, quantized_distance};
+pub use dv_types::QuantTier;
 pub use explain::QueryExplain;
 pub use grid::{CellCoord, ColumnPath, FractalGrid};
 pub use index::ZColumnIndex;
 pub use ledger::AccessLedger;
 pub use predictor::LayerPredictor;
 pub use projection::RoutingProjection;
-pub use quant::{decode, encode, QuantTier};
 pub use search::{RevertBeamSearch, SearchStats};

@@ -73,7 +73,7 @@ impl LayerPredictor {
 mod tests {
     use super::*;
     use crate::grid::{ColumnPath, FractalGrid};
-    use crate::quant::QuantTier;
+    use dv_types::QuantTier;
 
     #[test]
     fn generic_query_starts_outer() {

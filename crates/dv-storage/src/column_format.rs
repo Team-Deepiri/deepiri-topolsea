@@ -1,25 +1,11 @@
 pub const COLUMN_MAGIC: &[u8; 8] = b"TOPZCOLM";
 pub const COLUMN_VERSION: u32 = 2;
 
+use dv_types::QuantTier;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QuantTierTag {
-    U8,
-    U16,
-    F32,
-}
-
-impl QuantTierTag {
-    pub fn bytes_per_dim(&self) -> usize {
-        match self {
-            QuantTierTag::U8 => 1,
-            QuantTierTag::U16 => 2,
-            QuantTierTag::F32 => 4,
-        }
-    }
-}
+/// On-disk tier tag — alias of shared [`QuantTier`].
+pub type QuantTierTag = QuantTier;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ColumnFileHeader {

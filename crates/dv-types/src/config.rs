@@ -31,6 +31,14 @@ impl Default for HnswConfig {
     }
 }
 
+fn default_projection_seed() -> u64 {
+    42
+}
+
+fn default_hybrid_rerank_pool() -> usize {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZColumnConfig {
     pub outer_grid: (u16, u16),
@@ -38,9 +46,9 @@ pub struct ZColumnConfig {
     pub pitch_ratio: f32,
     pub rebalance_interval: u64,
     pub ef_search: usize,
-    #[serde(default)]
+    #[serde(default = "default_projection_seed")]
     pub projection_seed: u64,
-    #[serde(default)]
+    #[serde(default = "default_hybrid_rerank_pool")]
     pub hybrid_rerank_pool: usize,
 }
 
@@ -55,6 +63,19 @@ impl Default for ZColumnConfig {
             projection_seed: 42,
             hybrid_rerank_pool: 3,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_deserialize_uses_intended_defaults() {
+        let json = r#"{"outer_grid":[8,8],"max_layers":3,"pitch_ratio":0.5,"rebalance_interval":1000,"ef_search":64}"#;
+        let cfg: ZColumnConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.projection_seed, 42);
+        assert_eq!(cfg.hybrid_rerank_pool, 3);
     }
 }
 

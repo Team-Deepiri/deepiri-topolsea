@@ -2,8 +2,7 @@ use crate::column::ColumnStack;
 use crate::explain::QueryExplain;
 use crate::grid::{CellCoord, FractalGrid};
 use crate::predictor::LayerPredictor;
-use crate::quant;
-use dv_metrics::distance;
+use dv_metrics::{distance, quantized_distance};
 use dv_topk::{Candidate, TopKHeap};
 use dv_types::{DistanceMetric, VectorId};
 use std::collections::{HashSet, VecDeque};
@@ -95,7 +94,7 @@ impl<'a> RevertBeamSearch<'a> {
                         let dist = if let Some(v) = self.vectors.get(&id) {
                             distance(self.metric, query, v)
                         } else if i < col.quantized.len() {
-                            quant::quantized_distance(
+                            quantized_distance(
                                 self.metric,
                                 query,
                                 &col.quantized[i],

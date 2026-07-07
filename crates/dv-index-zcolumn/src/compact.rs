@@ -1,8 +1,8 @@
 use crate::column::ColumnStack;
 use crate::grid::{CellCoord, ColumnPath, FractalGrid};
-use crate::quant::QuantTier;
-use dv_types::VectorId;
+use dv_types::{QuantTier, VectorId};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 const HOT_THRESHOLD: f32 = 0.5;
 const COLD_THRESHOLD: f32 = 0.05;
@@ -16,22 +16,6 @@ pub struct CompactionEngine {
 impl CompactionEngine {
     pub fn new() -> Self {
         Self { events: 0 }
-    }
-
-    fn column_key(key: (u8, u16, u16)) -> String {
-        format!("{}:{}:{}", key.0, key.1, key.2)
-    }
-
-    fn parse_key(s: &str) -> Option<(u8, u16, u16)> {
-        let parts: Vec<_> = s.split(':').collect();
-        if parts.len() != 3 {
-            return None;
-        }
-        Some((
-            parts[0].parse().ok()?,
-            parts[1].parse().ok()?,
-            parts[2].parse().ok()?,
-        ))
     }
 
     /// Run compaction: collapse empty inner cells, promote hot, demote cold.
@@ -61,8 +45,8 @@ impl CompactionEngine {
         let inner_cells: Vec<_> = columns
             .iter()
             .filter(|(key, col)| {
-                Self::parse_key(key)
-                    .map(|(layer, _, _)| layer == max_layer && col.is_empty())
+                CellCoord::from_str(key)
+                    .map(|cell| cell.layer == max_layer && col.is_empty())
                     .unwrap_or(false)
             })
             .map(|(k, _)| k.clone())
@@ -76,8 +60,8 @@ impl CompactionEngine {
         let remaining_inner: usize = columns
             .keys()
             .filter(|key| {
-                Self::parse_key(key)
-                    .map(|(layer, _, _)| layer == max_layer)
+                CellCoord::from_str(key)
+                    .map(|cell| cell.layer == max_layer)
                     .unwrap_or(false)
             })
             .count();
@@ -97,10 +81,10 @@ impl CompactionEngine {
         let hot_ids: Vec<(VectorId, CellCoord)> = columns
             .iter()
             .filter_map(|(key, col)| {
-                let (layer, x, y) = Self::parse_key(key)?;
-                if col.ledger.is_hot(HOT_THRESHOLD) && layer > 0 {
+                let cell = CellCoord::from_str(key).ok()?;
+                if col.ledger.is_hot(HOT_THRESHOLD) && cell.layer > 0 {
                     let id = *col.ids.last()?;
-                    Some((id, CellCoord::new(layer - 1, x, y)))
+                    Some((id, CellCoord::new(cell.layer - 1, cell.x, cell.y)))
                 } else {
                     None
                 }
@@ -109,7 +93,7 @@ impl CompactionEngine {
 
         for (id, target_cell) in hot_ids {
             if let Some(vec) = vectors.get(&id) {
-                let key = Self::column_key(target_cell.key());
+                let key = target_cell.to_string();
                 let tier = QuantTier::for_layer(target_cell.layer, max_layers);
                 let col = columns.entry(key).or_insert_with(|| {
                     ColumnStack::new(ColumnPath::from_cell(target_cell), dimension, tier)
@@ -132,10 +116,10 @@ impl CompactionEngine {
         let cold_moves: Vec<(VectorId, String, CellCoord)> = columns
             .iter()
             .filter_map(|(key, col)| {
-                let (layer, x, y) = Self::parse_key(key)?;
-                if col.ledger.is_cold(COLD_THRESHOLD) && layer + 1 < max_layers {
+                let cell = CellCoord::from_str(key).ok()?;
+                if col.ledger.is_cold(COLD_THRESHOLD) && cell.layer + 1 < max_layers {
                     let id = *col.ids.first()?;
-                    let target = CellCoord::new(layer + 1, x, y);
+                    let target = CellCoord::new(cell.layer + 1, cell.x, cell.y);
                     Some((id, key.clone(), target))
                 } else {
                     None
@@ -145,7 +129,7 @@ impl CompactionEngine {
 
         for (id, src_key, target_cell) in cold_moves {
             if let Some(vec) = vectors.get(&id) {
-                let dst_key = Self::column_key(target_cell.key());
+                let dst_key = target_cell.to_string();
                 let tier = QuantTier::for_layer(target_cell.layer, max_layers);
                 if let Some(src) = columns.get_mut(&src_key) {
                     src.remove_id(id);

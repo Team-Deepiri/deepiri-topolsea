@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 
 /// A single cell in the fractal grid at a given layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -15,6 +17,28 @@ impl CellCoord {
 
     pub fn key(&self) -> (u8, u16, u16) {
         (self.layer, self.x, self.y)
+    }
+}
+
+impl fmt::Display for CellCoord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}", self.layer, self.x, self.y)
+    }
+}
+
+impl FromStr for CellCoord {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<_> = s.split(':').collect();
+        if parts.len() != 3 {
+            return Err(());
+        }
+        Ok(Self::new(
+            parts[0].parse().map_err(|_| ())?,
+            parts[1].parse().map_err(|_| ())?,
+            parts[2].parse().map_err(|_| ())?,
+        ))
     }
 }
 

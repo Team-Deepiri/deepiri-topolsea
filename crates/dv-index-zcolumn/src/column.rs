@@ -1,7 +1,7 @@
 use crate::grid::{CellCoord, ColumnPath};
 use crate::ledger::AccessLedger;
-use crate::quant::{self, QuantTier};
-use dv_types::VectorId;
+use dv_metrics::encode;
+use dv_types::{QuantTier, VectorId};
 use serde::{Deserialize, Serialize};
 
 /// A vertical stack of vectors at one fractal cell.
@@ -35,12 +35,9 @@ impl ColumnStack {
         tier: QuantTier,
         dimension: usize,
     ) -> Self {
-        let parts: Vec<_> = path_key.split(':').collect();
-        let cell = CellCoord::new(
-            parts.first().and_then(|s| s.parse().ok()).unwrap_or(0),
-            parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
-            parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
-        );
+        let cell = path_key
+            .parse::<CellCoord>()
+            .unwrap_or(CellCoord::new(0, 0, 0));
         Self {
             path: ColumnPath::from_cell(cell),
             ids,
@@ -68,7 +65,7 @@ impl ColumnStack {
                 *c = (*c * n + v) / (n + 1.0);
             }
         }
-        self.quantized.push(quant::encode(vector, self.quant_tier));
+        self.quantized.push(encode(vector, self.quant_tier));
         self.ids.push(id);
     }
 

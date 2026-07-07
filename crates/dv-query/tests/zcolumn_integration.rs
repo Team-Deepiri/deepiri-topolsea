@@ -133,7 +133,7 @@ fn zcolumn_compaction_after_delete() {
     }
 
     idx.remove(VectorId(49)).unwrap();
-    idx.record_access(&[VectorId(1)], 0);
+    idx.record_access(&[VectorId(1)], 1_000);
     let events_before = idx.compaction_events();
     idx.rebalance();
     assert!(idx.compaction_events() >= events_before);

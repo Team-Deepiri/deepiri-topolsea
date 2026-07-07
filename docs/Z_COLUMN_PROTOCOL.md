@@ -86,6 +86,11 @@ Integration tests enforce **recall@10 within 15% of flat ground truth** on 200-v
 | M5 | GPU batch projection + quantized scan |
 | M6 | Learned layer predictor (replace heuristics) |
 
+## API notes
+
+- `Collection::query` and `query_explain` take `&mut self` so Z-Column can update per-column access ledgers (used by compaction). Other index kinds ignore this side effect.
+- Access ledger timestamps use wall-clock milliseconds for decay; compaction promotes hot columns and demotes cold ones based on EMA weights.
+
 ## Go / No-Go (unchanged)
 
 - recall@10 within 2% of HNSW at equal memory on 10k/128d
