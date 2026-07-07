@@ -9,10 +9,15 @@ publish = false
 criterion = { workspace = true }
 dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
+dv-index-zcolumn = { path = "../dv-index-zcolumn" }
 dv-index-api = { path = "../dv-index-api" }
 dv-types = { path = "../dv-types" }
 rand = { workspace = true }
 
 [[bench]]
 name = "index_bench"
+harness = false
+
+[[bench]]
+name = "recall_bench"
 harness = false
