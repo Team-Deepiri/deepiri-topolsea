@@ -42,9 +42,7 @@ class Client:
 
         metric_str = metric.value if isinstance(metric, DistanceMetric) else metric
         if self._use_native:
-            native_col = self._native.get_or_create_collection(
-                name, dimension, metric_str, index
-            )
+            native_col = self._native.get_or_create_collection(name, dimension, metric_str, index)
             return Collection(native=native_col, name=name, dimension=dimension, metric=metric_str)
         pure_col = self._native.get_or_create_collection(name, dimension, metric_str)
         return Collection(native=pure_col, name=name, dimension=dimension, metric=metric_str)
