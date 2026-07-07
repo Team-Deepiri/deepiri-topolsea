@@ -81,6 +81,7 @@ results = col.query(query_vector=[0.15] * 384, top_k=5, filter={"topic": "rust"}
 | `dv-index-api` | `VectorIndex` trait |
 | `dv-index-flat` | Exact flat index |
 | `dv-index-hnsw` | HNSW graph index |
+| `dv-index-zcolumn` | Fractal Z-Column index |
 | `dv-storage` | Binary persistence format |
 | `dv-metadata` | Per-vector metadata + filters |
 | `dv-query` | Database and collection API |

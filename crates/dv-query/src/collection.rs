@@ -1,8 +1,9 @@
 use dv_index_api::VectorIndex;
 use dv_index_flat::FlatIndex;
 use dv_index_hnsw::HnswIndex;
+use dv_index_zcolumn::{ColumnStack, ZColumnIndex};
 use dv_metadata::{empty_metadata, Filter, MetadataStore};
-use dv_storage::StorageEngine;
+use dv_storage::{ColumnCellRecord, QuantTierTag, StorageEngine, ZColumnManifest};
 use dv_types::{CollectionConfig, ExternalId, IndexKind, Result, TopolseaError, Vector, VectorId};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -12,6 +13,7 @@ use crate::query::QueryResult;
 enum IndexBackend {
     Flat(Box<FlatIndex>),
     Hnsw(Box<HnswIndex>),
+    ZColumn(Box<ZColumnIndex>),
 }
 
 impl IndexBackend {
@@ -19,6 +21,7 @@ impl IndexBackend {
         match self {
             IndexBackend::Flat(i) => i.as_mut(),
             IndexBackend::Hnsw(i) => i.as_mut(),
+            IndexBackend::ZColumn(i) => i.as_mut(),
         }
     }
 
@@ -26,6 +29,7 @@ impl IndexBackend {
         match self {
             IndexBackend::Flat(i) => i.as_ref(),
             IndexBackend::Hnsw(i) => i.as_ref(),
+            IndexBackend::ZColumn(i) => i.as_ref(),
         }
     }
 
@@ -33,6 +37,7 @@ impl IndexBackend {
         match self {
             IndexBackend::Flat(i) => i.to_bytes(),
             IndexBackend::Hnsw(i) => i.to_bytes(),
+            IndexBackend::ZColumn(i) => i.to_bytes(),
         }
     }
 
@@ -40,6 +45,9 @@ impl IndexBackend {
         match kind {
             IndexKind::Flat => Ok(IndexBackend::Flat(Box::new(FlatIndex::from_bytes(bytes)?))),
             IndexKind::Hnsw => Ok(IndexBackend::Hnsw(Box::new(HnswIndex::from_bytes(bytes)?))),
+            IndexKind::ZColumn => Ok(IndexBackend::ZColumn(Box::new(ZColumnIndex::from_bytes(
+                bytes,
+            )?))),
         }
     }
 
@@ -47,6 +55,19 @@ impl IndexBackend {
         match self {
             IndexBackend::Flat(f) => f.ids().collect(),
             IndexBackend::Hnsw(h) => h.ids().collect(),
+            IndexBackend::ZColumn(z) => z.ids().collect(),
+        }
+    }
+
+    fn rebalance_if_zcolumn(&mut self) {
+        if let IndexBackend::ZColumn(z) = self {
+            z.rebalance();
+        }
+    }
+
+    fn record_zcolumn_access(&mut self, hit_ids: &[VectorId]) {
+        if let IndexBackend::ZColumn(z) = self {
+            z.record_access(hit_ids, 0);
         }
     }
 }
@@ -82,7 +103,64 @@ impl Collection {
             internal_to_external: HashMap::new(),
         };
         col.rebuild_id_maps();
+        col.load_zcolumn_segments()?;
         Ok(col)
+    }
+
+    fn load_zcolumn_segments(&mut self) -> Result<()> {
+        if self.config.index_kind != IndexKind::ZColumn {
+            return Ok(());
+        }
+        let manifest_path = self.storage.columns_dir(self.name()).join("manifest.json");
+        if !manifest_path.exists() {
+            return Ok(());
+        }
+        let manifest = self.storage.read_zcolumn_manifest(self.name())?;
+        let columns_empty = matches!(
+            &self.index,
+            IndexBackend::ZColumn(z) if z.columns().is_empty()
+        );
+
+        let mut layer_stacks: Vec<(u8, Vec<ColumnStack>)> = Vec::new();
+        for (layer_idx, _) in manifest.layer_files.iter().enumerate() {
+            let layer = layer_idx as u8;
+            let tier = match layer {
+                0 => QuantTierTag::U8,
+                l if l + 1 >= manifest.max_layers => QuantTierTag::F32,
+                _ => QuantTierTag::U16,
+            };
+            let quant_tier = match tier {
+                QuantTierTag::U8 => dv_index_zcolumn::QuantTier::U8,
+                QuantTierTag::U16 => dv_index_zcolumn::QuantTier::U16,
+                QuantTierTag::F32 => dv_index_zcolumn::QuantTier::F32,
+            };
+            let records =
+                self.storage
+                    .read_column_layer(self.name(), layer, manifest.dimension, tier)?;
+            let stacks: Vec<ColumnStack> = records
+                .into_iter()
+                .map(|rec| {
+                    ColumnStack::from_persisted(
+                        &rec.path_key,
+                        rec.ids,
+                        rec.payloads,
+                        rec.centroid,
+                        quant_tier,
+                        manifest.dimension,
+                    )
+                })
+                .collect();
+            if !stacks.is_empty() {
+                layer_stacks.push((layer, stacks));
+            }
+        }
+
+        if !layer_stacks.is_empty() && columns_empty {
+            if let IndexBackend::ZColumn(z) = &mut self.index {
+                z.restore_from_segments(manifest.dimension, &layer_stacks);
+            }
+        }
+        Ok(())
     }
 
     fn new_index(config: &CollectionConfig) -> IndexBackend {
@@ -94,6 +172,11 @@ impl Collection {
                 config.dimension,
                 config.metric,
                 config.hnsw.clone(),
+            ))),
+            IndexKind::ZColumn => IndexBackend::ZColumn(Box::new(ZColumnIndex::new(
+                config.dimension,
+                config.metric,
+                config.zcolumn.clone(),
             ))),
         }
     }
@@ -168,7 +251,7 @@ impl Collection {
     }
 
     pub fn query(
-        &self,
+        &mut self,
         query_vector: &[f32],
         top_k: usize,
         filter: Option<&Filter>,
@@ -211,12 +294,21 @@ impl Collection {
             }
         }
 
+        let hit_ids: Vec<VectorId> = results.iter().map(|r| r.internal_id).collect();
+        self.index.record_zcolumn_access(&hit_ids);
+
         Ok(results)
     }
 
     pub fn persist(&mut self) -> Result<()> {
+        self.index.rebalance_if_zcolumn();
+
         let index_bytes = self.index.encode_bytes()?;
         self.storage.write_index_blob(self.name(), &index_bytes)?;
+
+        if self.config.index_kind == IndexKind::ZColumn {
+            self.persist_zcolumn_segments()?;
+        }
 
         let mut meta_map = self.metadata.to_persisted();
         let id_map: HashMap<String, String> = self
@@ -241,6 +333,59 @@ impl Collection {
             .collect();
         let refs: Vec<_> = records.iter().map(|(id, v)| (*id, v.as_slice())).collect();
         self.storage.write_vectors(self.name(), &refs)?;
+        Ok(())
+    }
+
+    fn persist_zcolumn_segments(&self) -> Result<()> {
+        let IndexBackend::ZColumn(z) = &self.index else {
+            return Ok(());
+        };
+
+        let mut layer_files = Vec::new();
+        for layer in 0..z.grid().num_layers() {
+            let layer_u8 = layer as u8;
+            let tier = match layer {
+                0 => QuantTierTag::U8,
+                l if l + 1 >= z.grid().num_layers() => QuantTierTag::F32,
+                _ => QuantTierTag::U16,
+            };
+
+            let records: Vec<ColumnCellRecord> = z
+                .columns()
+                .iter()
+                .filter_map(|(key, col)| {
+                    let cell = col.cell()?;
+                    if cell.layer != layer_u8 {
+                        return None;
+                    }
+                    Some(ColumnCellRecord {
+                        path_key: key.clone(),
+                        ids: col.ids.clone(),
+                        payloads: col.quantized.clone(),
+                        centroid: col.centroid.clone(),
+                    })
+                })
+                .collect();
+
+            self.storage.write_column_layer(
+                self.name(),
+                layer_u8,
+                tier,
+                self.config.dimension,
+                &records,
+            )?;
+            layer_files.push(format!("L{layer_u8}.grid.bin"));
+        }
+
+        let manifest = ZColumnManifest {
+            outer_grid: self.config.zcolumn.outer_grid,
+            max_layers: self.config.zcolumn.max_layers,
+            pitch_ratio: self.config.zcolumn.pitch_ratio,
+            dimension: self.config.dimension,
+            layer_files,
+        };
+        self.storage
+            .write_zcolumn_manifest(self.name(), &manifest)?;
         Ok(())
     }
 }

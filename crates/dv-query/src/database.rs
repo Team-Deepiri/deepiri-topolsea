@@ -1,5 +1,5 @@
 use dv_storage::StorageEngine;
-use dv_types::{CollectionConfig, DistanceMetric, Result, TopolseaError};
+use dv_types::{CollectionConfig, DistanceMetric, IndexKind, Result, TopolseaError};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -52,13 +52,29 @@ impl Database {
         dimension: usize,
         metric: DistanceMetric,
     ) -> Result<&mut Collection> {
+        self.get_or_create_collection_with_config(name, dimension, metric, IndexKind::Hnsw)
+    }
+
+    pub fn get_or_create_collection_with_config(
+        &mut self,
+        name: &str,
+        dimension: usize,
+        metric: DistanceMetric,
+        index_kind: IndexKind,
+    ) -> Result<&mut Collection> {
         if !self.collections.contains_key(name) {
             if self.storage.collection_exists(name) {
                 let config = self.storage.load_config(name)?;
                 let col = open_collection(&self.storage, config)?;
                 self.collections.insert(name.to_string(), col);
             } else {
-                let config = CollectionConfig::new(name, dimension, metric);
+                let mut config = CollectionConfig::new(name, dimension, metric);
+                config.index_kind = index_kind;
+                if index_kind == IndexKind::ZColumn {
+                    config = config.with_zcolumn_index();
+                } else if index_kind == IndexKind::Flat {
+                    config = config.with_flat_index();
+                }
                 return self.create_collection(config);
             }
         }

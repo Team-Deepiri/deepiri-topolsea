@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use dv_query::Database;
-use dv_types::DistanceMetric;
+use dv_types::{DistanceMetric, IndexKind};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -25,6 +25,8 @@ enum Commands {
         dimension: usize,
         #[arg(long, default_value = "cosine")]
         metric: String,
+        #[arg(long, default_value = "hnsw")]
+        index: String,
     },
     /// Delete a collection
     Delete { name: String },
@@ -46,15 +48,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name,
             dimension,
             metric,
+            index,
         } => {
             let metric = DistanceMetric::from_str(&metric)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-            db.create_collection(dv_types::CollectionConfig::new(
-                name.clone(),
-                dimension,
-                metric,
-            ))?;
-            println!("created collection '{name}' (dim={dimension}, metric={metric})");
+            let index_kind = match index.to_lowercase().as_str() {
+                "flat" => IndexKind::Flat,
+                "zcolumn" => IndexKind::ZColumn,
+                _ => IndexKind::Hnsw,
+            };
+            let mut config = dv_types::CollectionConfig::new(name.clone(), dimension, metric);
+            config.index_kind = index_kind;
+            if index_kind == IndexKind::Flat {
+                config = config.with_flat_index();
+            } else if index_kind == IndexKind::ZColumn {
+                config = config.with_zcolumn_index();
+            }
+            db.create_collection(config)?;
+            println!(
+                "created collection '{name}' (dim={dimension}, metric={metric}, index={index})"
+            );
         }
         Commands::Delete { name } => {
             db.delete_collection(&name)?;

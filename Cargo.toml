@@ -6,6 +6,7 @@ members = [
     "crates/dv-index-api",
     "crates/dv-index-flat",
     "crates/dv-index-hnsw",
+    "crates/dv-index-zcolumn",
     "crates/dv-storage",
     "crates/dv-metadata",
     "crates/dv-query",

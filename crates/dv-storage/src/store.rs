@@ -1,3 +1,5 @@
+use crate::column_format::ZColumnManifest;
+use crate::column_segment::{ColumnCellRecord, ColumnSegment};
 use crate::segment::VectorSegment;
 use dv_types::{CollectionConfig, Result, TopolseaError, VectorId};
 use serde::{Deserialize, Serialize};
@@ -148,6 +150,50 @@ impl StorageEngine {
 
     pub fn root_path(&self) -> &Path {
         &self.root
+    }
+
+    pub fn columns_dir(&self, name: &str) -> PathBuf {
+        self.collection_dir(name).join("columns")
+    }
+
+    pub fn write_zcolumn_manifest(&self, name: &str, manifest: &ZColumnManifest) -> Result<()> {
+        let dir = self.columns_dir(name);
+        fs::create_dir_all(&dir)?;
+        write_json(dir.join("manifest.json"), manifest)
+    }
+
+    pub fn read_zcolumn_manifest(&self, name: &str) -> Result<ZColumnManifest> {
+        read_json(self.columns_dir(name).join("manifest.json"))
+    }
+
+    pub fn write_column_layer(
+        &self,
+        name: &str,
+        layer: u8,
+        tier: crate::column_format::QuantTierTag,
+        dimension: usize,
+        records: &[ColumnCellRecord],
+    ) -> Result<()> {
+        let dir = self.columns_dir(name);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("L{layer}.grid.bin"));
+        let seg = ColumnSegment::new(path, dimension, layer, tier);
+        seg.write_all(records)
+    }
+
+    pub fn read_column_layer(
+        &self,
+        name: &str,
+        layer: u8,
+        dimension: usize,
+        tier: crate::column_format::QuantTierTag,
+    ) -> Result<Vec<ColumnCellRecord>> {
+        let path = self.columns_dir(name).join(format!("L{layer}.grid.bin"));
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let seg = ColumnSegment::new(path, dimension, layer, tier);
+        seg.read_all()
     }
 
     pub fn at_root(root: PathBuf) -> Self {
