@@ -41,6 +41,26 @@ pub fn parse_physical_shard_name(name: &str) -> Option<(String, usize)> {
     Some((logical.to_string(), idx))
 }
 
+/// Live map of fractal column keys → owning shard (enables query-beam routing).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ShardRoutingIndex {
+    pub placements: std::collections::HashMap<String, u8>,
+    pub beam_radius: u16,
+}
+
+impl ShardRoutingIndex {
+    pub fn new(beam_radius: u16) -> Self {
+        Self {
+            placements: std::collections::HashMap::new(),
+            beam_radius,
+        }
+    }
+
+    pub fn record(&mut self, column_key: impl Into<String>, shard_id: u8) {
+        self.placements.insert(column_key.into(), shard_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

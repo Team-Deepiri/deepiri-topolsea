@@ -19,5 +19,8 @@ pub use index::ZColumnIndex;
 pub use ledger::AccessLedger;
 pub use predictor::LayerPredictor;
 pub use projection::RoutingProjection;
-pub use routing::{column_key_for_vector, shard_id_for_column_key, shard_id_for_vector};
+pub use routing::{
+    column_key_for_vector, shard_id_for_column_key, shard_id_for_vector, shard_ids_for_query,
+    ShardQueryRoute,
+};
 pub use search::{RevertBeamSearch, SearchStats};

@@ -87,6 +87,8 @@ impl Database {
 
         let manifest = ShardManifest::new(name, num_shards, &config);
         self.storage.write_shard_manifest(&manifest)?;
+        self.storage
+            .write_shard_routing(name, &dv_storage::ShardRoutingIndex::new(1))?;
 
         for shard_id in 0..num_shards {
             let physical = manifest.physical_name(shard_id);
@@ -117,8 +119,26 @@ impl Database {
         let manifest = self.storage.read_shard_manifest(logical_name)?;
         let shard = FractalShardRouter::route_vector(&manifest, &vector);
         let physical = manifest.physical_name(shard);
-        let col = self.get_collection(&physical)?;
-        col.upsert(external_id, vector, metadata)
+        let id = {
+            let col = self.get_collection(&physical)?;
+            col.upsert(external_id, vector.clone(), metadata)?
+        };
+
+        if manifest.index_kind == IndexKind::ZColumn {
+            let key = dv_index_zcolumn::column_key_for_vector(
+                manifest.dimension,
+                manifest.zcolumn.projection_seed,
+                manifest.zcolumn.outer_grid,
+                manifest.zcolumn.max_layers,
+                manifest.zcolumn.pitch_ratio,
+                &vector,
+            );
+            let mut routing = self.storage.read_shard_routing(logical_name)?;
+            routing.record(key, shard as u8);
+            self.storage.write_shard_routing(logical_name, &routing)?;
+        }
+
+        Ok(id)
     }
 
     pub fn query_sharded(
@@ -130,8 +150,30 @@ impl Database {
         ef: usize,
     ) -> Result<Vec<QueryResult>> {
         let manifest = self.storage.read_shard_manifest(logical_name)?;
+        let routing = self.storage.read_shard_routing(logical_name)?;
+
+        let target_shards: Vec<usize> = if manifest.index_kind == IndexKind::ZColumn {
+            let route = dv_index_zcolumn::ShardQueryRoute {
+                dimension: manifest.dimension,
+                projection_seed: manifest.zcolumn.projection_seed,
+                outer_grid: manifest.zcolumn.outer_grid,
+                max_layers: manifest.zcolumn.max_layers,
+                pitch_ratio: manifest.zcolumn.pitch_ratio,
+                num_shards: manifest.num_shards,
+                beam_radius: routing.beam_radius,
+            };
+            let mut ids =
+                dv_index_zcolumn::shard_ids_for_query(query_vector, &route, &routing.placements);
+            if ids.is_empty() {
+                ids = (0..manifest.num_shards).collect();
+            }
+            ids
+        } else {
+            (0..manifest.num_shards).collect()
+        };
+
         let mut merged = Vec::new();
-        for shard_id in 0..manifest.num_shards {
+        for shard_id in target_shards {
             let physical = manifest.physical_name(shard_id);
             let col = self.get_collection(&physical)?;
             let mut partial = col.query(query_vector, top_k, filter, ef)?;

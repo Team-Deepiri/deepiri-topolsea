@@ -2,10 +2,10 @@ use crate::column::ColumnStack;
 use crate::explain::QueryExplain;
 use crate::grid::{CellCoord, FractalGrid};
 use crate::predictor::LayerPredictor;
-use dv_metrics::{distance, quantized_distance};
+use dv_metrics::{distance, scan_column_distances};
 use dv_topk::{Candidate, TopKHeap};
 use dv_types::{DistanceMetric, VectorId};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Search statistics for benchmarking revert behavior.
 #[derive(Debug, Clone, Default)]
@@ -17,8 +17,8 @@ pub struct SearchStats {
 /// Beam search with callback-reverse backtracking on miss.
 pub struct RevertBeamSearch<'a> {
     grid: &'a FractalGrid,
-    columns: &'a [ColumnStack],
-    vectors: &'a std::collections::HashMap<VectorId, Vec<f32>>,
+    columns: &'a HashMap<String, ColumnStack>,
+    vectors: &'a HashMap<VectorId, Vec<f32>>,
     metric: DistanceMetric,
     dimension: usize,
     predictor: LayerPredictor,
@@ -28,8 +28,8 @@ pub struct RevertBeamSearch<'a> {
 impl<'a> RevertBeamSearch<'a> {
     pub fn new(
         grid: &'a FractalGrid,
-        columns: &'a [ColumnStack],
-        vectors: &'a std::collections::HashMap<VectorId, Vec<f32>>,
+        columns: &'a HashMap<String, ColumnStack>,
+        vectors: &'a HashMap<VectorId, Vec<f32>>,
         metric: DistanceMetric,
         dimension: usize,
         stats: &'a mut SearchStats,
@@ -60,7 +60,7 @@ impl<'a> RevertBeamSearch<'a> {
             return (Vec::new(), explain);
         }
 
-        let col_refs: Vec<&ColumnStack> = self.columns.iter().collect();
+        let col_refs: Vec<&ColumnStack> = self.columns.values().collect();
         let start_layer = self
             .predictor
             .entry_layer(query, self.grid, &col_refs, self.metric);
@@ -87,26 +87,7 @@ impl<'a> RevertBeamSearch<'a> {
                 self.stats.columns_scanned += 1;
                 visited_cells.insert(cell.key());
                 if let Some(col) = self.column_at(*cell) {
-                    for (i, &id) in col.ids.iter().enumerate() {
-                        if !visited.insert(id) {
-                            continue;
-                        }
-                        let dist = if let Some(v) = self.vectors.get(&id) {
-                            distance(self.metric, query, v)
-                        } else if i < col.quantized.len() {
-                            quantized_distance(
-                                self.metric,
-                                query,
-                                &col.quantized[i],
-                                col.quant_tier,
-                                self.dimension,
-                            )
-                        } else {
-                            continue;
-                        };
-                        heap.push(Candidate { id, distance: dist });
-                        found_any = true;
-                    }
+                    found_any |= self.scan_column(col, query, &mut visited, &mut heap);
                 }
             }
 
@@ -153,15 +134,8 @@ impl<'a> RevertBeamSearch<'a> {
 
         if heap.len() < top_k {
             explain.used_fallback_scan = true;
-            for col in self.columns {
-                for &id in &col.ids {
-                    if visited.insert(id) {
-                        if let Some(v) = self.vectors.get(&id) {
-                            let dist = distance(self.metric, query, v);
-                            heap.push(Candidate { id, distance: dist });
-                        }
-                    }
-                }
+            for col in self.columns.values() {
+                self.scan_column(col, query, &mut visited, &mut heap);
             }
         }
 
@@ -181,13 +155,46 @@ impl<'a> RevertBeamSearch<'a> {
         (results, explain)
     }
 
+    /// Batch-scan an entire column stack (quantized SIMD path + FP32 override when resident).
+    fn scan_column(
+        &self,
+        col: &ColumnStack,
+        query: &[f32],
+        visited: &mut HashSet<VectorId>,
+        heap: &mut TopKHeap,
+    ) -> bool {
+        let mut found = false;
+        let quantized_dists = scan_column_distances(
+            self.metric,
+            query,
+            col.quant_tier,
+            &col.quantized,
+            self.dimension,
+        );
+        for (i, &id) in col.ids.iter().enumerate() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let dist = if let Some(v) = self.vectors.get(&id) {
+                distance(self.metric, query, v)
+            } else if i < quantized_dists.len() {
+                quantized_dists[i]
+            } else {
+                continue;
+            };
+            heap.push(Candidate { id, distance: dist });
+            found = true;
+        }
+        found
+    }
+
     fn column_at(&self, cell: CellCoord) -> Option<&ColumnStack> {
-        self.columns.iter().find(|c| c.cell() == Some(&cell))
+        self.columns.get(&cell.to_string())
     }
 
     fn score_layer_columns(&self, layer: u8, query: &[f32]) -> Vec<(CellCoord, f32)> {
         self.columns
-            .iter()
+            .values()
             .filter_map(|c| {
                 let cell = c.cell()?;
                 if cell.layer != layer || c.centroid.is_empty() {
@@ -202,7 +209,7 @@ impl<'a> RevertBeamSearch<'a> {
     fn sibling_columns(&self, parent: CellCoord, query: &[f32]) -> Vec<(CellCoord, f32)> {
         let layer = parent.layer;
         self.columns
-            .iter()
+            .values()
             .filter_map(|c| {
                 let cell = c.cell()?;
                 if cell.layer != layer || *cell == parent || c.centroid.is_empty() {

@@ -11,5 +11,5 @@ pub use column_format::{
 pub use column_segment::{ColumnCellRecord, ColumnSegment};
 pub use format::{FileHeader, MAGIC, VERSION};
 pub use segment::VectorSegment;
-pub use shard_format::{parse_physical_shard_name, ShardManifest};
+pub use shard_format::{parse_physical_shard_name, ShardManifest, ShardRoutingIndex};
 pub use store::StorageEngine;

@@ -250,7 +250,36 @@ impl StorageEngine {
         if path.exists() {
             fs::remove_file(path)?;
         }
+        let routing = self.shard_routing_path(logical_name);
+        if routing.exists() {
+            fs::remove_file(routing)?;
+        }
         Ok(())
+    }
+
+    fn shard_routing_path(&self, logical_name: &str) -> PathBuf {
+        self.shards_dir()
+            .join(format!("{logical_name}.routing.json"))
+    }
+
+    pub fn write_shard_routing(
+        &self,
+        logical_name: &str,
+        index: &crate::shard_format::ShardRoutingIndex,
+    ) -> Result<()> {
+        fs::create_dir_all(self.shards_dir())?;
+        write_json(self.shard_routing_path(logical_name), index)
+    }
+
+    pub fn read_shard_routing(
+        &self,
+        logical_name: &str,
+    ) -> Result<crate::shard_format::ShardRoutingIndex> {
+        let path = self.shard_routing_path(logical_name);
+        if !path.exists() {
+            return Ok(crate::shard_format::ShardRoutingIndex::default());
+        }
+        read_json(path)
     }
 }
 

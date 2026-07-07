@@ -70,8 +70,12 @@ impl ZColumnIndex {
         }
     }
 
-    fn column_list(&self) -> Vec<ColumnStack> {
-        self.columns.values().cloned().collect()
+    pub fn projection(&self) -> &RoutingProjection {
+        &self.projection
+    }
+
+    pub fn project_batch(&self, vectors: &[&[f32]]) -> Vec<(f32, f32)> {
+        self.projection.project_batch(vectors)
     }
 
     fn assign_cell(&self, vector: &[f32]) -> (u8, u16, u16) {
@@ -132,11 +136,10 @@ impl ZColumnIndex {
             .saturating_mul(self.config.hybrid_rerank_pool.max(1))
             .max(top_k);
         let ef = ef.max(pool).max(self.config.ef_search);
-        let columns = self.column_list();
         let mut stats = SearchStats::default();
         let mut searcher = RevertBeamSearch::new(
             &self.grid,
-            &columns,
+            &self.columns,
             &self.vectors,
             self.metric,
             self.dimension,
@@ -347,7 +350,7 @@ mod tests {
         let bytes = idx.to_bytes().unwrap();
         let loaded = ZColumnIndex::from_bytes(&bytes).unwrap();
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded.projection.dimension(), 128);
+        assert_eq!(loaded.projection().dimension(), 128);
     }
 
     #[test]

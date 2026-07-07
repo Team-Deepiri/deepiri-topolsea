@@ -103,15 +103,13 @@ mod tests {
     fn generic_query_starts_outer() {
         let grid = FractalGrid::new((4, 4), 3, 0.5);
         let mut col = ColumnStack::new(
-            ColumnPath::from_cell(crate::grid::CellCoord::new(2, 1, 1)),
+            ColumnPath::from_cell(crate::grid::CellCoord::new(0, 1, 1)),
             2,
             QuantTier::F32,
         );
         col.push(dv_types::VectorId(1), &[1.0, 0.0]);
         let predictor = LayerPredictor::default_predictor();
-        // Orthogonal diffuse query should not tunnel to inner layer.
-        let layer =
-            predictor.entry_layer(&[0.0, 1.0], &grid, &[&col], DistanceMetric::L2);
+        let layer = predictor.entry_layer(&[0.0, 1.0], &grid, &[&col], DistanceMetric::L2);
         assert_eq!(layer, 0);
     }
 

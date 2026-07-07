@@ -65,59 +65,78 @@ impl ColumnSegment {
     }
 
     pub fn read_all(&self) -> Result<Vec<ColumnCellRecord>> {
-        let mut file = File::open(&self.path)?;
-        let header = read_header(&mut file)?;
-        header.validate()?;
-        let dim = header.dimension as usize;
-
-        let mut out = Vec::with_capacity(header.cell_count as usize);
-        for _ in 0..header.cell_count {
-            let mut key_len_buf = [0u8; 4];
-            file.read_exact(&mut key_len_buf)?;
-            let key_len = u32::from_le_bytes(key_len_buf) as usize;
-            let mut key_buf = vec![0u8; key_len];
-            file.read_exact(&mut key_buf)?;
-            let path_key =
-                String::from_utf8(key_buf).map_err(|e| TopolseaError::Storage(e.to_string()))?;
-
-            let mut count_buf = [0u8; 4];
-            file.read_exact(&mut count_buf)?;
-            let count = u32::from_le_bytes(count_buf) as usize;
-
-            let mut ids = Vec::with_capacity(count);
-            let mut payloads = Vec::with_capacity(count);
-            for _ in 0..count {
-                let mut id_buf = [0u8; 8];
-                file.read_exact(&mut id_buf)?;
-                ids.push(VectorId(u64::from_le_bytes(id_buf)));
-
-                let mut plen_buf = [0u8; 4];
-                file.read_exact(&mut plen_buf)?;
-                let plen = u32::from_le_bytes(plen_buf) as usize;
-                let mut payload = vec![0u8; plen];
-                file.read_exact(&mut payload)?;
-                payloads.push(payload);
-            }
-
-            let mut cent_len_buf = [0u8; 4];
-            file.read_exact(&mut cent_len_buf)?;
-            let cent_len = u32::from_le_bytes(cent_len_buf) as usize;
-            let mut centroid = vec![0.0f32; cent_len.min(dim)];
-            for slot in centroid.iter_mut().take(cent_len) {
-                let mut buf = [0u8; 4];
-                file.read_exact(&mut buf)?;
-                *slot = f32::from_le_bytes(buf);
-            }
-
-            out.push(ColumnCellRecord {
-                path_key,
-                ids,
-                payloads,
-                centroid,
-            });
+        let file = File::open(&self.path)?;
+        let len = file.metadata()?.len();
+        if len == 0 {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        // mmap: single kernel page-in, parse payloads in-place from mapped slice
+        let mmap = unsafe {
+            memmap2::MmapOptions::new()
+                .map(&file)
+                .map_err(|e| TopolseaError::Storage(e.to_string()))?
+        };
+        parse_column_records(&mmap[..], self.dimension)
     }
+}
+
+fn parse_column_records(data: &[u8], default_dim: usize) -> Result<Vec<ColumnCellRecord>> {
+    let mut cursor = std::io::Cursor::new(data);
+    let header = read_header(&mut cursor)?;
+    header.validate()?;
+    let dim = header.dimension as usize;
+
+    let mut out = Vec::with_capacity(header.cell_count as usize);
+    for _ in 0..header.cell_count {
+        let mut key_len_buf = [0u8; 4];
+        std::io::Read::read_exact(&mut cursor, &mut key_len_buf)?;
+        let key_len = u32::from_le_bytes(key_len_buf) as usize;
+        let mut key_buf = vec![0u8; key_len];
+        std::io::Read::read_exact(&mut cursor, &mut key_buf)?;
+        let path_key =
+            String::from_utf8(key_buf).map_err(|e| TopolseaError::Storage(e.to_string()))?;
+
+        let mut count_buf = [0u8; 4];
+        std::io::Read::read_exact(&mut cursor, &mut count_buf)?;
+        let count = u32::from_le_bytes(count_buf) as usize;
+
+        let mut ids = Vec::with_capacity(count);
+        let mut payloads = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut id_buf = [0u8; 8];
+            std::io::Read::read_exact(&mut cursor, &mut id_buf)?;
+            ids.push(VectorId(u64::from_le_bytes(id_buf)));
+
+            let mut plen_buf = [0u8; 4];
+            std::io::Read::read_exact(&mut cursor, &mut plen_buf)?;
+            let plen = u32::from_le_bytes(plen_buf) as usize;
+            let pos = cursor.position() as usize;
+            let end = pos + plen;
+            if end > data.len() {
+                return Err(TopolseaError::Storage("truncated column payload".into()));
+            }
+            payloads.push(data[pos..end].to_vec());
+            cursor.set_position(end as u64);
+        }
+
+        let mut cent_len_buf = [0u8; 4];
+        std::io::Read::read_exact(&mut cursor, &mut cent_len_buf)?;
+        let cent_len = u32::from_le_bytes(cent_len_buf) as usize;
+        let mut centroid = vec![0.0f32; cent_len.min(dim.max(default_dim))];
+        for slot in centroid.iter_mut().take(cent_len) {
+            let mut buf = [0u8; 4];
+            std::io::Read::read_exact(&mut cursor, &mut buf)?;
+            *slot = f32::from_le_bytes(buf);
+        }
+
+        out.push(ColumnCellRecord {
+            path_key,
+            ids,
+            payloads,
+            centroid,
+        });
+    }
+    Ok(out)
 }
 
 fn write_header(w: &mut impl Write, header: &ColumnFileHeader) -> Result<()> {

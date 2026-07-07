@@ -167,6 +167,28 @@ impl FractalGrid {
         child_layer_def.cell_at(px, py)
     }
 
+    /// All fractal cells within `radius` (Manhattan box) of the projected point at every layer.
+    pub fn cells_in_neighborhood(&self, px: f32, py: f32, radius: u16) -> Vec<CellCoord> {
+        use std::collections::HashSet;
+        let mut out = HashSet::new();
+        let r = radius as i32;
+        for layer in &self.layers {
+            let Some(center) = layer.cell_at(px, py) else {
+                continue;
+            };
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let x = center.x as i32 + dx;
+                    let y = center.y as i32 + dy;
+                    if x >= 0 && y >= 0 && x < layer.width as i32 && y < layer.height as i32 {
+                        out.insert(CellCoord::new(layer.layer, x as u16, y as u16));
+                    }
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
     pub fn all_cells(&self, layer: u8) -> Vec<CellCoord> {
         let Some(gl) = self.layer(layer) else {
             return Vec::new();
