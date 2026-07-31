@@ -235,10 +235,17 @@ Claim: “Z-Column is a different species that beats HNSW on density/explainabil
 
 ## Experiments before solutions
 
-Harness: `topolsea-math-probe`, `topolsea-prove`.  
-See `docs/math/EXPERIMENT_RESULTS.md`.
+Harness: `topolsea-math-probe --json`, `topolsea-prove`.  
+See `docs/math/EXPERIMENT_RESULTS.md` (v2, post honesty fixes).
 
-Also fixed measurement bug: `max_fallback_columns` was configured but unused; now enforced in ranked fallback.
+**Empirical law (current operator):** search occupies two basins only —
+
+1. **Fast/empty:** no fallback ⇒ τ ~ 0.005, ρ_r ~ 0.01, λ ≪ 1  
+2. **Slow/full:** ≥1 neighborhood ring ⇒ τ → 1, ρ_r ≥ 0.98, λ ~ 5–16  
+
+No measured continuum in `(τ, ρ_r)`. That is the falsification of “tune ef/rings to trade recall for speed” under **grid-ring** expand. The missing state variable is **connectivity among columns** (centroid graph), not another scalar knob.
+
+**Code fixes required for the experiment to be valid (done on branch):** stop forcing min-1 fallback; stop setting beam `ef ← max(ef, N/20)`.
 
 ---
 
