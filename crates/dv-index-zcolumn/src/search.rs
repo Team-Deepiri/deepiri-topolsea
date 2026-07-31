@@ -23,6 +23,8 @@ pub struct SearchParams {
     pub query_xy: (f32, f32),
     pub fallback_beam_radius: u16,
     pub max_fallback_rings: u16,
+    /// Cap on centroid-ranked column fallback (never full corpus).
+    pub max_fallback_columns: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +33,7 @@ struct FallbackCtx<'a> {
     query: &'a [f32],
     beam_radius: u16,
     max_rings: u16,
+    max_columns: usize,
 }
 
 /// Beam search with callback-reverse backtracking on miss.
@@ -81,6 +84,7 @@ impl<'a> RevertBeamSearch<'a> {
             query_xy,
             fallback_beam_radius,
             max_fallback_rings,
+            max_fallback_columns,
         } = params;
 
         let mut explain = QueryExplain::new("predictive_revert_beam");
@@ -167,6 +171,7 @@ impl<'a> RevertBeamSearch<'a> {
             query,
             beam_radius: fallback_beam_radius,
             max_rings: max_fallback_rings,
+            max_columns: max_fallback_columns.max(1),
         };
         self.neighborhood_fallback(fb, &mut visited, &mut visited_cells, &mut heap);
 
@@ -235,11 +240,16 @@ impl<'a> RevertBeamSearch<'a> {
             .collect();
         ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
+        let mut scanned_extra = 0usize;
         for (_, cell) in ranked {
+            if scanned_extra >= ctx.max_columns {
+                break;
+            }
             if !visited_cells.insert(cell.key()) {
                 continue;
             }
             self.stats.columns_scanned += 1;
+            scanned_extra += 1;
             if let Some(col) = self.column_at(cell) {
                 self.scan_column(col, ctx.query, visited, heap, false);
             }

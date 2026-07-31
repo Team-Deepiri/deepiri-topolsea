@@ -23,6 +23,10 @@ serde_json = { workspace = true }
 name = "topolsea-prove"
 path = "src/bin/prove.rs"
 
+[[bin]]
+name = "topolsea-math-probe"
+path = "src/bin/math_probe.rs"
+
 [[bench]]
 name = "index_bench"
 harness = false

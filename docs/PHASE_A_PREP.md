@@ -2,6 +2,8 @@
 
 Prepared after applied-math measurement. Math track and DB track run **in parallel**; public ANN-Benchmarks (item 4 / Phase B.9) wait on bounded-touch GO.
 
+See the full vision and sequencing in [`docs/NEXT_STEPS.md`](NEXT_STEPS.md).
+
 ## Track M — Math / index (unblock honest benches)
 
 | ID | Work | Crate | Acceptance |
@@ -32,7 +34,9 @@ Prepared after applied-math measurement. Math track and DB track run **in parall
 - Auth: API key header; TLS via rustls in deploy config
 - Replace toy `ShardQueryServer` raw TCP with shared axum app
 - Python: thin HTTP client path alongside PyO3 embedded client
-- **Tests:** httptest### A4. Payload-aware filtered ANN
+- **Tests:** HTTP integration smoke (create, upsert, search, health)
+
+### A4. Payload-aware filtered ANN
 - **New:** inverted index in `dv-metadata` (`field → value → Roaring bitmap of VectorId`)
 - Search: compute eligible set first; constrain Z-Column/HNSW candidate generation (not `top_k*10` post-filter)
 - HNSW: skip non-eligible neighbors; Z-Column: skip ids not in bitmap during `scan_column`
@@ -45,7 +49,7 @@ Prepared after applied-math measurement. Math track and DB track run **in parall
 
 ## Track B/C (stubs only — after A)
 
-See prior roadmap: hybrid BM25, mmap segments, PQ/IVF, ANN-Benchmarks datasets, replication, shard hardening, Prometheus, Helm, snapshots.
+See [`docs/NEXT_STEPS.md`](NEXT_STEPS.md): hybrid BM25, mmap segments, PQ/IVF, ANN-Benchmarks datasets, replication, shard hardening, Prometheus, Helm, snapshots.
 
 ## Suggested sequencing (2–3 sprints)
 

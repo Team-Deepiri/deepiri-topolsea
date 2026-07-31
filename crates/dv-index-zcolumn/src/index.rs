@@ -157,6 +157,7 @@ impl ZColumnIndex {
             query_xy: (qx, qy),
             fallback_beam_radius: self.config.fallback_beam_radius,
             max_fallback_rings: self.config.max_fallback_rings,
+            max_fallback_columns: self.config.max_fallback_columns,
         };
         let mut stats = SearchStats::default();
         let mut predictor =
