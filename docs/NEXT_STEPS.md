@@ -47,11 +47,12 @@ Milvus/Qdrant-level polish (coordinator HA, Woodpecker/Kafka WAL, DiskANN, GPU C
 ```
 Track M (index honesty)          Track A→C (database product)
 ───────────────────────          ───────────────────────────
-M1 conditional fallback          A1 WAL + auto-flush
-M2 hard V_touch budget           A2 thread-safe collection
-M3 coarse quant beam             A3 axum/tonic service
-M4 compaction move-not-copy      A4 payload-aware filtered ANN
-M5 re-measure gates              A5 finish filter DSL
+M3 coarse quant / intra-col      A1 WAL + auto-flush
+M4 height-balance + move-not-copy A2 thread-safe collection
+M-graph centroid column graph    A3 axum/tonic service
+M2 hard V_touch budget           A4 payload-aware filtered ANN
+M1 conditional fallback          A5 finish filter DSL
+M5 re-measure gates
         \                               /
          \                             /
           └── public ANN-Benchmarks ──┘
@@ -74,7 +75,7 @@ Protocol extras (revert rate, compaction recall) in [`docs/Z_COLUMN_PROTOCOL.md`
 
 Not “ship benches first.” Order:
 
-1. **Track M — make Z-Column ANN real** — after measurement: pure beam has ~0% recall; fallback restores recall but τ→1. Next code is **centroid-graph beam** (neighbors among columns) + hard `V_touch` budget + conditional fallback (see [`math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md)). Until then default product ANN = **HNSW**; Z-Column = explain + shard keys.  
+1. **Track M — make Z-Column ANN real** — after Phase-2 localize/oracle: whole-column expand (even perfect column pick) cannot hit G1∧G3 because GT lives in ~6–8 **tall** columns (τ≈0.68). Next code is **M3 intra-column prune + M4 height-balance**, then **centroid-graph** to close the centroid→oracle gap, then hard `V_touch` + conditional fallback (see [`math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md)). Until then default product ANN = **HNSW**; Z-Column = explain + shard keys.  
 2. **WAL + auto-flush** — durable by default  
 3. **Thread-safe collection + concurrent server** (REST; gRPC when REST is stable)  
 4. **Real filtered search + complete filter ops**  

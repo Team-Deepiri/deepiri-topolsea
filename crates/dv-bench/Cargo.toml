@@ -14,6 +14,7 @@ dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
 dv-index-zcolumn = { path = "../dv-index-zcolumn" }
 dv-index-api = { path = "../dv-index-api" }
+dv-metrics = { path = "../dv-metrics" }
 dv-types = { path = "../dv-types" }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -26,6 +27,10 @@ path = "src/bin/prove.rs"
 [[bin]]
 name = "topolsea-math-probe"
 path = "src/bin/math_probe.rs"
+
+[[bin]]
+name = "topolsea-math-localize"
+path = "src/bin/math_localize.rs"
 
 [[bench]]
 name = "index_bench"

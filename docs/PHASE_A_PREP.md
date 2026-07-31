@@ -9,12 +9,14 @@ See the full vision and sequencing in [`docs/NEXT_STEPS.md`](NEXT_STEPS.md).
 | ID | Work | Crate | Acceptance |
 |---|---|---|---|
 | M0 | Honest search knobs (done): no forced min-1 fallback; do not inflate beam `ef` with `coarse_pool` | `dv-index-zcolumn` | Pure beam τ≪1; ef/fallback knobs change measured τ |
-| M-graph | Neighbor graph over nonempty **column centroids** (HNSW/knn); beam walks graph not grid rings | `dv-index-zcolumn` | Pure/graph beam recall@10 ≥0.9×HNSW at τ&lt;0.3 on 10k sphere |
+| M3 | Beam/column scan uses quantized coarse filter; FP32 only in rerank | `dv-index-zcolumn`, `dv-metrics` | Oracle-style B=8 column visit at τ&lt;0.5 with recall≥0.9 on 10k sphere |
+| M4 | Compaction promote **moves** id; split/rebalance hot columns (cut φ) | `compact.rs` | Σ heights = N; max height / mean height shrinks under load |
+| M-graph | Neighbor graph over nonempty **column centroids**; beam walks graph not grid rings | `dv-index-zcolumn` | Online column pick recall within 10% of oracle at same B (see `topolsea-math-localize`) |
 | M1 | Conditional fallback (only if heap &lt; k or score gap) | `dv-index-zcolumn` | `used_fallback_scan` true only when fired; revert rate measurable |
 | M2 | Hard `V_touch` budget in explain + search stop | `dv-index-zcolumn` | `candidate_pool ≤ budget` |
-| M3 | Beam uses quantized coarse scan; FP32 only in rerank | `dv-index-zcolumn`, `dv-metrics` | p50 drops; recall held at same budget |
-| M4 | Compaction promote **moves** id (remove from source) | `compact.rs` | Σ heights = N invariant under rebalance |
-| M5 | Re-run `topolsea-math-probe` + publish numbers | `dv-bench` | G1∧G2∧G3 on 10k; then 100k |
+| M5 | Re-run `topolsea-math-localize` + `topolsea-math-probe` | `dv-bench` | G1∧G2∧G3 on 10k; then 100k |
+
+Phase-2 result: **oracle whole-column expand cannot hit G1∧G3** (needs ~8 columns at τ≈0.68). M3+M4 are on the critical path; M-graph alone is not enough.
 
 ## Track A — Phase A database must-haves
 
@@ -56,10 +58,10 @@ See [`docs/NEXT_STEPS.md`](NEXT_STEPS.md): hybrid BM25, mmap segments, PQ/IVF, A
 ## Suggested sequencing (2–3 sprints)
 
 ```
-Week 1: M1–M3 + A5 (filters) + A2 sketch
-Week 2: A1 WAL + A3 axum skeleton
-Week 3: A4 filtered ANN + M4/M5 re-measure
-Week 4: public ANN-Benchmarks only if G1∧G2∧G3 pass
+Week 1: M3 (intra-column prune) + A5 (filters) + A2 sketch
+Week 2: M4 height-balance + A1 WAL + A3 axum skeleton
+Week 3: M-graph (close oracle gap) + A4 filtered ANN + M1/M2
+Week 4: M5 re-measure; public ANN-Benchmarks only if G1∧G2∧G3 pass
 ```
 
 ## Non-goals this phase

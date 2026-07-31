@@ -113,22 +113,24 @@ N=2k, ef=32, pure beam: seeds {1,42,999} → recall 0.0125 / 0.0025 / 0.0025, no
 
 | Guess | Failure | Next build (propels G1∧G2∧G3) |
 |---|---|---|
-| Fractal beam alone is ANN | recall ~1% at τ~0.5% | **M-graph:** HNSW/knn over **column centroids**; beam walks that graph (not grid rings) |
-| Raising `ef` trades τ for recall | ef inert once coarse_pool decoupled; few columns/layer | Same — need **inter-column edges**, not wider same-layer truncate |
-| Neighborhood rings = controlled expand | First ring ⇒ τ→1 | **Hard V_touch budget** + stop; replace rings with centroid-ANN probe of size B≪N |
-| Fallback is a safety net | Fallback **is** the retriever | Make fallback **budgeted** (M2) and rare (M1 conditional) |
-| Predictor will fix entry layer | Beam path too narrow; observe signal was polluted | Fix search graph first; then predictor |
+| Fractal beam alone is ANN | recall ~1% at τ~0.5% | Better expand — but see Phase-2 oracle |
+| Raising `ef` trades τ for recall | ef inert once coarse_pool decoupled; few columns/layer | Need inter-column edges **and** intra-column prune |
+| Neighborhood rings = controlled expand | First ring ⇒ τ→1 | Hard `V_touch` budget; do not use rings as the retriever |
+| Fallback is a safety net | Fallback **is** the retriever | Budgeted (M2) + rare (M1) |
+| **Centroid-kNN / M-graph alone** | Even **oracle** column pick needs B≈6–8 at τ≈0.68 for G1 | **M3+M4 first** (partial column scan + height balance); M-graph closes centroid→oracle gap |
+| Predictor will fix entry layer | Beam path too narrow; observe signal was polluted | Fix partition + prune + graph first |
 
-### Recommended Track M sequence (updated)
+### Recommended Track M sequence (updated after Phase-2)
 
-1. **M0 (done here):** honest caps; stop inflating ef with coarse_pool  
-2. **M-graph:** build neighbor list among nonempty column centroids (HNSW or brute for &lt;2k columns)  
-3. **M2:** hard `V_touch` / distance-eval budget in explain + early exit  
-4. **M1:** run ring/ranked fallback **only** if heap&lt;k or score gap  
-5. **M3:** quantized coarse scan inside columns; FP32 only at rerank  
-6. **M5:** re-probe; publish only if G1∧G2∧G3  
+1. **M0 (done):** honest caps; stop inflating ef with coarse_pool  
+2. **M3:** quantized coarse scan inside columns; FP32 only at rerank *(unblocks τ while visiting oracle’s ~8 cols)*  
+3. **M4:** compaction / split so hot columns do not own most of N  
+4. **M-graph:** neighbor list among nonempty column centroids (close gap to oracle picker)  
+5. **M2:** hard `V_touch` / distance-eval budget in explain + early exit  
+6. **M1:** ring/ranked fallback **only** if heap&lt;k or score gap  
+7. **M5:** re-probe with `topolsea-math-localize` + `topolsea-math-probe`; publish only if G1∧G2∧G3  
 
-Until M-graph works: **default product ANN = HNSW**; Z-Column = explain + fractal shard keys (still valuable).
+Until that lands: **default product ANN = HNSW**; Z-Column = explain + fractal shard keys (still valuable).
 
 ---
 
@@ -151,3 +153,47 @@ Default config looked like recall≥HNSW at ~5× latency with τ=1. That was **e
 
 Surprises stopped: every new scale repeats the same cliff (fast/empty vs slow/exhaustive).  
 Ready to **commit engineering** (centroid graph + budgets) rather than more parameter sweeps of the same operator.
+
+---
+
+## Phase-2: localization + centroid-kNN + oracle (M-graph stress test)
+
+Harness: `cargo run -p dv-bench --release --bin topolsea-math-localize -- --n=10000`  
+(also ran N∈{2k,10k,50k}; 40 queries; G1 = recall≥0.98 **vs flat**).
+
+### What we measured
+
+1. **Where GT lives** — for each query, which fractal columns hold the true top-10.  
+2. **Centroid-kNN expand (`centB*`)** — scan the B columns whose centroids are nearest the query (online IVF / naive M-graph).  
+3. **Oracle column expand (`orclB*`)** — cheat: pick the B columns that actually contain the most GT mass. Upper bound on **any** whole-column picker.
+
+### Headline (sphere, N=10 000, φ≈333, 30 nonempty cols)
+
+| Fact | Value |
+|---|---|
+| GT in nearest-centroid cell | **5%** |
+| Unique columns housing one query's GT@10 | p50=**6**, p99=**8** (oracle floor on B) |
+| `centB8` recall / τ | 0.44 / 0.28 |
+| `orclB8` recall / τ / lat× | **1.00 / 0.68 / 2.45** → G123 = **Ynn** |
+| `orclB4` recall / τ | 0.79 / 0.50 → still &lt;G1 |
+| Any method with G1∧G2∧G3 | **none** |
+
+Same story at N=50k (φ≈1515): oracle floor still p50≈6 columns; `orclB8` hits recall 1.0 at τ≈0.68. Centroid-kNN recall matches the localization CDF exactly (scoring is consistent; mass just is not in the nearest centroids).
+
+### Falsification (important)
+
+**Whole-column expand cannot reach G1∧G3 under the current partition**, even with an oracle column picker.  
+Reason: neighbors are scattered across ~6–8 columns, and those columns are the **tall** ones — scanning them already touches ≳65% of N.  
+So “add a centroid graph and walk B≪#cols” is **necessary for better column selection** (centroid leaves ~2× recall on the table vs oracle at B=8) but **not sufficient** for the product gates.
+
+### Revised Track M (what to build next)
+
+| Priority | Work | Why |
+|---|---|---|
+| **M3** | Quantized / residual **intra-column** prune; FP32 only on survivors | Only way to visit ~8 GT columns at τ&lt;0.5 |
+| **M4** | Height-balance / split hot columns (move-not-copy) | Shrink φ so oracle’s B columns are not most of the corpus |
+| **M-graph** | Centroid neighbor graph (close centroid→oracle gap) | Still needed so online search tracks the oracle curve |
+| M2 / M1 | Hard `V_touch` budget; conditional fallback | Keep τ honest once prune+graph exist |
+| M5 | Re-run localize + math-probe | Publish only on G1∧G2∧G3 |
+
+Until then: **product ANN = HNSW**; Z-Column = explain + fractal shard keys.
