@@ -165,17 +165,22 @@ impl<'a> RevertBeamSearch<'a> {
             }
         }
 
-        explain.used_fallback_scan = true;
+        explain.used_fallback_scan = false;
         let fb = FallbackCtx {
             query_xy,
             query,
             beam_radius: fallback_beam_radius,
             max_rings: max_fallback_rings,
-            max_columns: max_fallback_columns.max(1),
+            max_columns: max_fallback_columns,
         };
-        self.neighborhood_fallback(fb, &mut visited, &mut visited_cells, &mut heap);
-
-        self.ranked_column_fallback(fb, &mut visited, &mut visited_cells, &mut heap);
+        if fallback_beam_radius > 0 && max_fallback_rings > 0 {
+            explain.used_fallback_scan = true;
+            self.neighborhood_fallback(fb, &mut visited, &mut visited_cells, &mut heap);
+        }
+        if max_fallback_columns > 0 {
+            explain.used_fallback_scan = true;
+            self.ranked_column_fallback(fb, &mut visited, &mut visited_cells, &mut heap);
+        }
 
         explain.revert_count = self.stats.revert_count;
         explain.columns_scanned = self.stats.columns_scanned;

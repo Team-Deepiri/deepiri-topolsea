@@ -8,9 +8,11 @@ See the full vision and sequencing in [`docs/NEXT_STEPS.md`](NEXT_STEPS.md).
 
 | ID | Work | Crate | Acceptance |
 |---|---|---|---|
-| M1 | Conditional fallback (only if heap < k or score gap) | `dv-index-zcolumn` | `used_fallback_scan` true only when fired; revert rate measurable |
+| M0 | Honest search knobs (done): no forced min-1 fallback; do not inflate beam `ef` with `coarse_pool` | `dv-index-zcolumn` | Pure beam τ≪1; ef/fallback knobs change measured τ |
+| M-graph | Neighbor graph over nonempty **column centroids** (HNSW/knn); beam walks graph not grid rings | `dv-index-zcolumn` | Pure/graph beam recall@10 ≥0.9×HNSW at τ&lt;0.3 on 10k sphere |
+| M1 | Conditional fallback (only if heap &lt; k or score gap) | `dv-index-zcolumn` | `used_fallback_scan` true only when fired; revert rate measurable |
 | M2 | Hard `V_touch` budget in explain + search stop | `dv-index-zcolumn` | `candidate_pool ≤ budget` |
-| M3 | Beam uses quantized coarse scan; FP32 only in rerank | `dv-index-zcolumn`, `dv-metrics` | p50 drops; recall held within 2% of current at same budget |
+| M3 | Beam uses quantized coarse scan; FP32 only in rerank | `dv-index-zcolumn`, `dv-metrics` | p50 drops; recall held at same budget |
 | M4 | Compaction promote **moves** id (remove from source) | `compact.rs` | Σ heights = N invariant under rebalance |
 | M5 | Re-run `topolsea-math-probe` + publish numbers | `dv-bench` | G1∧G2∧G3 on 10k; then 100k |
 

@@ -1,29 +1,33 @@
 # Experiment plan — Z-Column vs HNSW
 
 ## Goals
-Falsify or support protocol go/no-go from `docs/Z_COLUMN_PROTOCOL.md` using measurable quantities from applied-math discovery.
+Map dimensionless groups `(τ, ρ_r, λ, β, φ)` and find (or prove absence of) regimes that pass G1∧G2∧G3 under **honest** search (no accidental exhaustive fallback).
 
 ## Gates
 | Gate | Pass if |
 |---|---|
 | G1 Recall | `recall_Z / recall_HNSW ≥ 0.98` at k=10 |
 | G2 Latency | `p50_Z / p50_HNSW ≤ 1.5` |
-| G3 Touch | `V_touch / N < 0.5` (sublinear spirit; protocol implied via columns) |
-| G4 Revert | Prefer: fraction of queries with `revert_count>0` < 0.30 **when fallbacks disabled**; today’s avg count is reported separately |
+| G3 Touch | `V_touch / N < 0.5` |
 
 ## Matrix
-| n | dim | metric | queries | seed | ef | k | rings | fcols |
-|---|-----|--------|---------|------|----|---|-------|-------|
-| 10_000 | 128 | cosine | 40–50 | 42 | 128 | 10 | sweep | sweep |
+| Factor | Values |
+|---|---|
+| N | 2 000, 10 000, 50 000 |
+| dim | 128 |
+| distro | unit sphere; 32 Gaussian clusters σ=0.08 |
+| ef | 8…128 |
+| rings / beam / fcols | pure beam (0/0/0) → light → default-like |
+| seed | 42 (+ seed sensitivity {1,42,999}) |
 
 ## Commands
 ```bash
-cargo run -p dv-bench --release --bin topolsea-math-probe -- 10000
+cargo run -p dv-bench --release --bin topolsea-math-probe -- --json
+# optional faster: --quick
 cargo run -p dv-bench --release --bin topolsea-prove -- --scale 10000 --queries 50
 ```
 
-## Held-out later
-- Clustered Gaussian blobs (not only unit sphere)
-- 100k / 1M scales
-- Equal-memory HNSW M/efConstruction sweep vs Z-Column quant tiers
-- ANN-Benchmarks datasets (Phase B item 9)
+## Held-out / next after M-graph
+- ANN-Benchmarks datasets (SIFT1M / glove) once centroid-graph search exists  
+- Equal-memory HNSW M/efConstruction sweep  
+- Text embedding dumps from Deepiri RAG stacks  

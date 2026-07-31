@@ -74,11 +74,11 @@ Protocol extras (revert rate, compaction recall) in [`docs/Z_COLUMN_PROTOCOL.md`
 
 Not “ship benches first.” Order:
 
-1. **Track M quick wins** — conditional fallback, `V_touch` budget, wire/respect fallback caps (partially done), coarse scan in beam  
+1. **Track M — make Z-Column ANN real** — after measurement: pure beam has ~0% recall; fallback restores recall but τ→1. Next code is **centroid-graph beam** (neighbors among columns) + hard `V_touch` budget + conditional fallback (see [`math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md)). Until then default product ANN = **HNSW**; Z-Column = explain + shard keys.  
 2. **WAL + auto-flush** — durable by default  
 3. **Thread-safe collection + concurrent server** (REST; gRPC when REST is stable)  
 4. **Real filtered search + complete filter ops**  
-5. **Public ANN-Benchmarks** — only after G1∧G2∧G3 (or publish HNSW as default and Z-Column as explain/shard-key story until then)
+5. **Public ANN-Benchmarks** — only after G1∧G2∧G3 (or publish HNSW numbers and Z-Column as explain/shard story)
 
 Crate-level prep: [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md).
 

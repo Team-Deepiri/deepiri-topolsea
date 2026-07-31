@@ -144,11 +144,13 @@ impl ZColumnIndex {
         let base_pool = top_k
             .saturating_mul(self.config.hybrid_rerank_pool.max(1))
             .max(top_k);
+        // Heap capacity for hybrid rerank — NOT a beam-width floor (that made τ→1).
         let scale_pool = (self.vectors.len() / 20)
             .clamp(base_pool, 512)
             .max(ef.min(512));
         let coarse_pool = base_pool.max(scale_pool);
-        let ef = ef.max(coarse_pool).max(self.config.ef_search);
+        // Beam width follows caller ef (+ config floor). Do not inflate with coarse_pool.
+        let ef = ef.max(self.config.ef_search).max(1);
         let (qx, qy) = self.projection.project(query);
         let params = crate::search::SearchParams {
             coarse_pool,

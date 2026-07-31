@@ -1,54 +1,153 @@
-# Experiment results — 2026-07-31
+# Experiment results — Z-Column applied-math campaign
 
-Machine: local release build. Seed 42. Cosine, dim=128, k=10, ef=128.
+Updated: 2026-07-31 (v2 after structural search fixes).  
+Harness: `cargo run -p dv-bench --release --bin topolsea-math-probe -- --json`  
+Raw JSON: `/tmp/topolsea-math-probe-full.json` (local run artifact).  
+Math framing: [`Z_COLUMN_APPLIED_MATH.md`](Z_COLUMN_APPLIED_MATH.md). Roadmap: [`../NEXT_STEPS.md`](../NEXT_STEPS.md).
 
-## Fix applied before fair measure
-`ZColumnConfig.max_fallback_columns` existed but was **not wired** into `ranked_column_fallback`. Wired in `dv-index-zcolumn` so ranked fallback respects the cap. Neighborhood rings still expand independently.
+---
 
-## `topolsea-prove` @ n=10_000 (default Z-Column config)
+## Why this campaign (propel the goal)
 
-| Index | recall@10 | p50 ms | QPS | notes |
-|---|---:|---:|---:|---|
-| Flat | 1.000 | ~2.4 | ~405 | GT |
-| HNSW | 0.954 | ~1.66–1.74 | ~570–600 | baseline |
-| Z-Column | 1.000 | ~8.4–8.9 | ~110–118 | |
+Production goal needs **G1∧G2∧G3** (recall ≥0.98×HNSW, p50 ≤1.5×HNSW, touch τ&lt;0.5).  
+Prior runs looked like “recall OK, slow.” That was **misleading**: search was accidentally near-exhaustive. This round **removes the cheats**, measures the real fractal walk, and names the engineering that unlocks a path to all three gates.
 
-| Ratio | Value | Gate |
-|---|---:|---|
-| recall Z/HNSW | **1.048** | G1 **GO** |
-| p50 Z/HNSW | **~5.1–5.5** | G2 **NO-GO** |
-| touch V/N | **1.000** | G3 **NO-GO** |
-| footprint Z/HNSW | ~1.96 | heavier serialized index |
+---
 
-## `topolsea-math-probe` fallback sweep @ n=10_000, 40 queries
+## Bugs found by measurement (fixed on this branch)
 
-HNSW recall@10 ≈ 0.9525, p50 ≈ 1.796 ms
+| Bug | Effect | Fix |
+|---|---|---|
+| `fallback_beam_radius.max(1)` + `max_fallback_columns.max(1)` | “rings=0,fcols=0” still ran fallback | Skip neighborhood/ranked unless caps &gt; 0; set `used_fallback_scan` only when used |
+| `ef = ef.max(coarse_pool)` with `coarse_pool ≈ N/20` | Beam width ignored caller `ef`; τ→1 by construction | Keep `coarse_pool` for **rerank heap only**; beam uses caller/`ef_search` |
 
-| rings | fcols | recall | vs HNSW | p50 ms | ×HNSW | avg cands | avg cols | revert_avg |
-|------:|------:|-------:|--------:|-------:|-------:|----------:|---------:|-----------:|
-| 0 | 0 | 0.815 | 0.856 | 8.07 | 4.49 | 7849 | 37 | 0.00 |
-| 1 | 16 | 0.955 | 1.003 | 8.95 | 4.99 | 9714 | 46 | 0.00 |
-| 2 | 32 | 1.000 | 1.050 | 9.86 | 5.49 | 10000 | 73 | 0.00 |
-| 2 | 96 | 1.000 | 1.050 | 9.49 | 5.29 | 10000 | 73 | 0.00 |
-| 4 | 96 | 1.000 | 1.050 | 8.85 | 4.93 | 10000 | 158 | 0.00 |
-| 8 | 96 | 1.000 | 1.050 | 10.01 | 5.57 | 10000 | 329 | 0.00 |
-| 8 | 10000 | 1.000 | 1.050 | 9.31 | 5.18 | 10000 | 329 | 0.00 |
+These are exactly the applied-math failure mode: **observer/description artifacts leaking into dynamics**.
 
-## Interpretation (applied-math)
+---
 
-1. **High recall under default settings is purchased by near-exhaustive candidate touch**, not by sparse fractal walk.
-2. **Pure beam (rings=0,fcols=0) misses G1** (0.856× HNSW) and still touches ~78% of corpus because `ef=128` opens fat columns with exact FP32 scans.
-3. **Callback-reverse is idle** (`revert_avg=0`) — the novel control path is not load-bearing under these budgets.
-4. **Latency gate fails in every regime tested** (~4.5–5.5× HNSW).
+## Gates (protocol)
 
-## Overall go/no-go (novel ANN claims at 10k/128d)
-
-| Claim | Result |
+| Gate | Pass |
 |---|---|
-| Recall within 2% of HNSW | GO only when touch≈1; **NO-GO under bounded touch** |
-| p50 ≤ 1.5× HNSW | **NO-GO** |
-| Sublinear scan / density win | **NO-GO** |
-| Explainability + DR rebuild | Still valid product features (not refuted) |
-| Fractal column = shard key | Valid engineering primitive (M4) |
+| G1 | `recall_Z / recall_HNSW ≥ 0.98` @ k=10 |
+| G2 | `p50_Z / p50_HNSW ≤ 1.5` |
+| G3 | `candidates_touched / N &lt; 0.5` |
 
-**Decision:** do **not** market Z-Column as HNSW replacement on speed/density until a bounded-`τ` regime passes G1∧G2. Proceed with Phase A database hardening in parallel; keep a **math fix track** (conditional fallback, vector budget, coarse scan, compaction move-not-copy) as prerequisite to public ANN-Benchmarks claims.
+**Result after fixes: no regime in the grid passed G1∧G2∧G3.**
+
+---
+
+## Experiment matrix
+
+- Scales: N ∈ {2k, 10k, 50k}, dim=128, k=10, cosine, seed=42  
+- Distros: unit sphere; 32 Gaussian clusters (σ=0.08) — held-out structure  
+- Sweep: ef ∈ {8…128}, rings/beam/fcols from pure beam → default-like  
+- Extra: projection-seed sensitivity at N=2k pure beam  
+
+---
+
+## Headline numbers (sphere, N=10 000)
+
+HNSW baseline: recall@10 ≈ **0.955**, p50 ≈ **1.71 ms** (ef=128).
+
+| Regime | recall | vs HNSW | p50 ms | lat× | τ touch | G123 |
+|---|---:|---:|---:|---:|---:|---|
+| Pure beam (rings=0,fcols=0), any ef | ~0.008 | ~0.008 | ~0.05 | ~0.03 | ~0.006 | n**YY** |
+| Light fallback ef=16 rings=1 fcols=8 | 0.863 | 0.903 | 8.3 | 4.9 | 0.93 | nnn |
+| Light fallback ef=24 rings=1 fcols=16 | 0.950 | 0.995 | 9.0 | 5.2 | 0.98 | **Y**nn |
+| rings=2 fcols=32 | 1.000 | 1.05 | ~9 | ~5 | 1.00 | **Y**nn |
+| Default-like rings=8 fcols=96 | 1.000 | 1.05 | ~9.5 | ~5 | 1.00 | **Y**nn |
+
+**Cliff, not curve:** pure beam is fast+sparse but recall≈0; one ring of neighborhood restores recall and **collapses to τ≈1**. There is no intermediate τ with G1 under current primitives.
+
+### Dimensionless groups (sphere N=10k, pure beam)
+
+| Group | Value | Reading |
+|---|---|---|
+| β = ef/k | 0.8–12.8 | **Does not move τ or recall** once beam is honest — layer has few columns |
+| τ = V_touch/N | ~0.005 | Sublinear ✓ |
+| ρ_r = recall_Z/recall_HNSW | ~0.008 | Catastrophic ✗ |
+| λ = p50_Z/p50_HNSW | ~0.03 | Fast ✓ |
+| φ = N / nonempty_cols | ~333 | Mass piled into ~30 columns — projection is peaked |
+
+---
+
+## Scale check (sphere, pure beam vs light fallback)
+
+| N | Pure beam recall | Pure τ | Light (r1,f16) recall | Light τ | Light lat× |
+|---:|---:|---:|---:|---:|---:|
+| 2 000 | ~0.005 | ~0.007 | ~1.00 | ~1.0 | ~2.5 |
+| 10 000 | ~0.008 | ~0.006 | ~0.95 | ~0.98 | ~5 |
+| 50 000 | ~0.010 | ~0.007 | ~0.95 | ~0.99 | ~16 |
+
+As N grows, **fallback latency× worsens** while pure-beam recall stays near zero. Exhaustive-ish neighborhood does not scale.
+
+---
+
+## Clustered distro (important for RAG)
+
+Absolute recall@10 vs flat GT (not vs broken HNSW ratios):
+
+| N | HNSW (default) | Z pure beam | Z light fallback |
+|---:|---:|---:|---:|
+| 2 000 | 0.25 | ~0.85–1.00* | ~1.00 |
+| 10 000 | 0.27 | 0.89 (pre-fix*) / ~0 after honest pure | ~1.00 |
+| 50 000 | 0.25 | ~0.005 pure | ~0.99–1.00 |
+
+\*Pre-fix pure beam still had accidental fallback. After fix, pure beam ≈0 on clusters at 50k too.
+
+**Note:** default HNSW is a weak baseline on this clustered generator (efConstruction/M defaults). Still: Z-Column **with fallback** matches flat GT on clusters; the open problem remains **bounded τ**, not absolute recall.
+
+On clusters at N=2k pure beam after fix, revert_frac ≈ 0.08 — first time revert is non-zero (still rare).
+
+---
+
+## Projection seed (description symmetry)
+
+N=2k, ef=32, pure beam: seeds {1,42,999} → recall 0.0125 / 0.0025 / 0.0025, nonempty cols 21–24.  
+**Local search is seed-sensitive**; any “learned predictor” on top of a dead beam will not save ANN quality.
+
+---
+
+## Failed guesses → what to build (Track M → goal)
+
+| Guess | Failure | Next build (propels G1∧G2∧G3) |
+|---|---|---|
+| Fractal beam alone is ANN | recall ~1% at τ~0.5% | **M-graph:** HNSW/knn over **column centroids**; beam walks that graph (not grid rings) |
+| Raising `ef` trades τ for recall | ef inert once coarse_pool decoupled; few columns/layer | Same — need **inter-column edges**, not wider same-layer truncate |
+| Neighborhood rings = controlled expand | First ring ⇒ τ→1 | **Hard V_touch budget** + stop; replace rings with centroid-ANN probe of size B≪N |
+| Fallback is a safety net | Fallback **is** the retriever | Make fallback **budgeted** (M2) and rare (M1 conditional) |
+| Predictor will fix entry layer | Beam path too narrow; observe signal was polluted | Fix search graph first; then predictor |
+
+### Recommended Track M sequence (updated)
+
+1. **M0 (done here):** honest caps; stop inflating ef with coarse_pool  
+2. **M-graph:** build neighbor list among nonempty column centroids (HNSW or brute for &lt;2k columns)  
+3. **M2:** hard `V_touch` / distance-eval budget in explain + early exit  
+4. **M1:** run ring/ranked fallback **only** if heap&lt;k or score gap  
+5. **M3:** quantized coarse scan inside columns; FP32 only at rerank  
+6. **M5:** re-probe; publish only if G1∧G2∧G3  
+
+Until M-graph works: **default product ANN = HNSW**; Z-Column = explain + fractal shard keys (still valuable).
+
+---
+
+## v1 snapshot (before honesty fixes) — do not market
+
+Default config looked like recall≥HNSW at ~5× latency with τ=1. That was **exhaustive fallback**, not fractal skill. Retained only as a cautionary baseline in git history / earlier notes.
+
+---
+
+## Domain of validity
+
+- Synthetic unit sphere + simple Gaussian clusters ≠ production text embeddings  
+- HNSW not retuned per distro  
+- Latency is single-threaded release binary on one machine  
+- Column graph redesign not yet implemented — conclusions about **current** code, not the ceiling of the addressing idea  
+
+---
+
+## Stopping condition for this loop
+
+Surprises stopped: every new scale repeats the same cliff (fast/empty vs slow/exhaustive).  
+Ready to **commit engineering** (centroid graph + budgets) rather than more parameter sweeps of the same operator.
