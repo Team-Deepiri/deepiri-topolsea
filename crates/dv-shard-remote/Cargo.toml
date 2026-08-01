@@ -11,6 +11,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["json"] }
 rayon = { workspace = true }
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

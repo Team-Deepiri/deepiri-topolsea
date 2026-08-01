@@ -35,6 +35,12 @@ pub fn check_api_key(headers: &HeaderMap, expected: Option<&str>) -> Result<(), 
 }
 
 /// Validate credentials and resolve the request namespace.
+///
+/// Precedence:
+/// 1. No auth configured → `x-namespace` header or `default`
+/// 2. Key matches a tenant key → that tenant namespace (header ignored)
+/// 3. Key matches the global API key → `x-namespace` or `default`
+/// 4. Otherwise → 401
 #[allow(clippy::result_large_err)]
 pub fn authorize(
     headers: &HeaderMap,

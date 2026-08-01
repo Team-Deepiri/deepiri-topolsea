@@ -60,11 +60,12 @@ impl ServiceMetrics {
         if samples.is_empty() {
             return 0;
         }
-        let mut sorted = samples.clone();
-        sorted.sort_unstable();
-        let idx = ((pct.clamp(0.0, 1.0) * (sorted.len() as f64 - 1.0)).round() as usize)
-            .min(sorted.len() - 1);
-        sorted[idx]
+        let mut buf = samples.clone();
+        let idx = ((pct.clamp(0.0, 1.0) * (buf.len() as f64 - 1.0)).round() as usize)
+            .min(buf.len() - 1);
+        // select_nth is O(n) average vs full sort — scrapes stay cheap at 2k samples.
+        let (_, val, _) = buf.select_nth_unstable(idx);
+        *val
     }
 
     /// Prometheus text exposition format.
@@ -166,13 +167,14 @@ impl ServiceMetrics {
             );
             out.push_str("# TYPE topolsea_http_route_p99_micros gauge\n");
             for route in h.keys() {
-                let mut sorted = h.get(route).cloned().unwrap_or_default();
-                if sorted.is_empty() {
+                let mut buf = h.get(route).cloned().unwrap_or_default();
+                if buf.is_empty() {
                     continue;
                 }
-                sorted.sort_unstable();
-                let idx = ((0.99_f64 * (sorted.len() as f64 - 1.0)).round() as usize)
-                    .min(sorted.len() - 1);
+                let idx = ((0.99_f64 * (buf.len() as f64 - 1.0)).round() as usize)
+                    .min(buf.len() - 1);
+                let (_, val, _) = buf.select_nth_unstable(idx);
+                let p99 = *val;
                 let safe: String = route
                     .chars()
                     .map(|c| {
@@ -185,7 +187,7 @@ impl ServiceMetrics {
                     .collect();
                 out.push_str(&format!(
                     "topolsea_http_route_p99_micros{{route=\"{safe}\"}} {}\n",
-                    sorted[idx]
+                    p99
                 ));
             }
         }
