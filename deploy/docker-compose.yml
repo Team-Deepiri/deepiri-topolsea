@@ -12,7 +12,12 @@ services:
     volumes:
       - topolsea-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:6333/health"]
+      # Avoid curl on slim images — use bash /dev/tcp.
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && head -1 <&3 | grep -q 200'",
+        ]
       interval: 10s
       timeout: 3s
       retries: 5

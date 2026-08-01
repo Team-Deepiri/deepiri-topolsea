@@ -56,6 +56,16 @@ pub struct ShardClusterConfig {
     /// Backup replica endpoints per shard (tried on primary failure) — C10.
     #[serde(default)]
     pub replicas: std::collections::HashMap<usize, Vec<String>>,
+    /// When true, sharded upsert fails if any replica ack fails (sync durability).
+    #[serde(default)]
+    pub require_replica_ack: bool,
+    /// Timeout for replica sync RPCs (ms).
+    #[serde(default = "default_replica_timeout_ms")]
+    pub replica_timeout_ms: u64,
+}
+
+fn default_replica_timeout_ms() -> u64 {
+    10_000
 }
 
 impl ShardClusterConfig {
@@ -92,6 +102,15 @@ pub struct ClusterNode {
     pub advertise_url: String,
     #[serde(default)]
     pub role: NodeRole,
+    /// Last heartbeat unix millis (0 = never).
+    #[serde(default)]
+    pub last_heartbeat_ms: u64,
+    #[serde(default = "default_node_healthy")]
+    pub healthy: bool,
+}
+
+fn default_node_healthy() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

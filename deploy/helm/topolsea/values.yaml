@@ -13,6 +13,11 @@ apiKey: ""
 tenantKeys: ""
 flushSecs: 30
 
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  labels: {}
+
 persistence:
   enabled: true
   size: 20Gi

@@ -1,4 +1,4 @@
-//! Observability: Prometheus-style metrics for the Topolsea service.
+//! Observability: Prometheus-style metrics + tracing helpers for the Topolsea service.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -13,7 +13,9 @@ pub struct ServiceMetrics {
     pub http_errors_total: AtomicU64,
     pub search_total: AtomicU64,
     pub upsert_total: AtomicU64,
+    pub delete_total: AtomicU64,
     pub replicate_total: AtomicU64,
+    pub replicate_fail_total: AtomicU64,
     pub snapshot_total: AtomicU64,
     pub shard_fanout_total: AtomicU64,
     pub shard_fanout_errors: AtomicU64,
@@ -103,9 +105,19 @@ impl ServiceMetrics {
             self.upsert_total.load(Ordering::Relaxed)
         );
         counter!(
+            "topolsea_delete_total",
+            "Delete operations",
+            self.delete_total.load(Ordering::Relaxed)
+        );
+        counter!(
             "topolsea_replicate_total",
             "Replication apply operations",
             self.replicate_total.load(Ordering::Relaxed)
+        );
+        counter!(
+            "topolsea_replicate_fail_total",
+            "Replication apply failures",
+            self.replicate_fail_total.load(Ordering::Relaxed)
         );
         counter!(
             "topolsea_snapshot_total",
@@ -121,6 +133,11 @@ impl ServiceMetrics {
             "topolsea_shard_fanout_errors_total",
             "Remote shard fan-out failures",
             self.shard_fanout_errors.load(Ordering::Relaxed)
+        );
+        gauge!(
+            "topolsea_http_latency_p50_micros",
+            "Approx p50 latency across recent http samples",
+            self.percentile_micros("http", 0.50)
         );
         gauge!(
             "topolsea_http_latency_p99_micros",
@@ -140,6 +157,67 @@ impl ServiceMetrics {
             "Average HTTP latency microseconds",
             avg
         );
+
+        // Per-route p99 as labeled gauges (bounded cardinality via sample keys).
+        {
+            let h = self.histograms.lock();
+            out.push_str(
+                "# HELP topolsea_http_route_p99_micros Approx p99 latency by route label\n",
+            );
+            out.push_str("# TYPE topolsea_http_route_p99_micros gauge\n");
+            for route in h.keys() {
+                let mut sorted = h.get(route).cloned().unwrap_or_default();
+                if sorted.is_empty() {
+                    continue;
+                }
+                sorted.sort_unstable();
+                let idx = ((0.99_f64 * (sorted.len() as f64 - 1.0)).round() as usize)
+                    .min(sorted.len() - 1);
+                let safe: String = route
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                out.push_str(&format!(
+                    "topolsea_http_route_p99_micros{{route=\"{safe}\"}} {}\n",
+                    sorted[idx]
+                ));
+            }
+        }
         out
+    }
+}
+
+/// OpenTelemetry-compatible request id / span helpers (C12).
+/// Full OTLP export is optional via env `OTEL_EXPORTER_OTLP_ENDPOINT` when a collector
+/// is wired; TraceLayer + these helpers always emit structured spans.
+pub mod trace {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Generate a simple hex request id (not cryptographic).
+    pub fn new_request_id() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{nanos:x}")
+    }
+
+    /// Build a W3C-ish `traceparent` value for downstream propagation.
+    pub fn traceparent(request_id: &str) -> String {
+        let tid = format!("{request_id:0<32}")
+            .chars()
+            .take(32)
+            .collect::<String>();
+        let sid = format!("{request_id:0<16}")
+            .chars()
+            .take(16)
+            .collect::<String>();
+        format!("00-{tid}-{sid}-01")
     }
 }

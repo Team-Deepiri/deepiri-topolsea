@@ -1,7 +1,8 @@
 use crate::circuit::CircuitBreakerRegistry;
 use crate::protocol::{
-    ReplicateUpsertRequest, ReplicateUpsertResponse, ShardQueryRequest, ShardQueryResponse,
-    ShardRemoteError, QUERY_PATH, REPLICATE_UPSERT_PATH,
+    ReplicateDeleteRequest, ReplicateDeleteResponse, ReplicateUpsertRequest,
+    ReplicateUpsertResponse, ShardHealthResponse, ShardQueryRequest, ShardQueryResponse,
+    ShardRemoteError, QUERY_PATH, REPLICATE_DELETE_PATH, REPLICATE_UPSERT_PATH, SHARD_HEALTH_PATH,
 };
 use std::thread;
 use std::time::Duration;
@@ -64,6 +65,43 @@ impl ShardQueryClient {
         self.post_json(&url, base_url, request)
     }
 
+    pub fn replicate_delete(
+        &self,
+        base_url: &str,
+        request: &ReplicateDeleteRequest,
+    ) -> Result<ReplicateDeleteResponse, ShardRemoteError> {
+        let url = format!(
+            "{}{}",
+            base_url.trim_end_matches('/'),
+            REPLICATE_DELETE_PATH
+        );
+        self.post_json(&url, base_url, request)
+    }
+
+    pub fn health(&self, base_url: &str) -> Result<ShardHealthResponse, ShardRemoteError> {
+        let url = format!("{}{}", base_url.trim_end_matches('/'), SHARD_HEALTH_PATH);
+        if !self.breaker.allow(base_url) {
+            return Err(ShardRemoteError::CircuitOpen(base_url.into()));
+        }
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_millis(self.timeout_ms.min(5_000)))
+            .build();
+        let response = agent
+            .get(&url)
+            .call()
+            .map_err(|e| ShardRemoteError::Transport(e.to_string()))?;
+        let status = response.status();
+        let body = response
+            .into_string()
+            .map_err(|e| ShardRemoteError::Transport(e.to_string()))?;
+        if status != 200 {
+            self.breaker.on_failure(base_url);
+            return Err(ShardRemoteError::Http { status, body });
+        }
+        self.breaker.on_success(base_url);
+        serde_json::from_str(&body).map_err(|e| ShardRemoteError::Serde(e.to_string()))
+    }
+
     /// Try primary then failover endpoints (circuit-aware).
     pub fn query_with_failover(
         &self,
@@ -109,10 +147,7 @@ impl ShardQueryClient {
                 }
                 Err(e) => {
                     let retryable = matches!(&e, ShardRemoteError::Transport(_))
-                        || matches!(
-                            &e,
-                            ShardRemoteError::Http { status, .. } if *status >= 500
-                        );
+                        || matches!(&e, ShardRemoteError::Http { status, .. } if *status >= 500);
                     if attempt >= self.max_retries || !retryable {
                         self.breaker.on_failure(endpoint_key);
                         return Err(e);

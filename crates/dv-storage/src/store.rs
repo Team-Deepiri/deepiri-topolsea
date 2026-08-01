@@ -460,6 +460,15 @@ impl StorageEngine {
 
     /// Create a point-in-time copy of all collections under `__snapshots__/{name}/`.
     pub fn create_snapshot(&self, name: &str) -> Result<PathBuf> {
+        self.create_snapshot_opts(name, None)
+    }
+
+    /// Create a snapshot. When `collections` is `Some`, only those collection dirs are copied.
+    pub fn create_snapshot_opts(
+        &self,
+        name: &str,
+        collections: Option<&[String]>,
+    ) -> Result<PathBuf> {
         if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
             return Err(TopolseaError::InvalidConfig("invalid snapshot name".into()));
         }
@@ -470,25 +479,45 @@ impl StorageEngine {
             )));
         }
         fs::create_dir_all(&dest)?;
-        for col in self.list_collections()? {
-            let src = self.collection_dir(&col);
-            let dst = dest.join(&col);
+        let all = self.list_collections()?;
+        let selected: Vec<String> = match collections {
+            Some(cols) if !cols.is_empty() => {
+                for c in cols {
+                    if !all.iter().any(|a| a == c) {
+                        return Err(TopolseaError::CollectionNotFound(c.clone()));
+                    }
+                }
+                cols.to_vec()
+            }
+            _ => all,
+        };
+        for col in &selected {
+            let src = self.collection_dir(col);
+            let dst = dest.join(col);
             copy_dir_recursive(&src, &dst)?;
         }
-        // Also copy shard manifests / cluster config.
-        let shards_src = self.shards_dir();
-        if shards_src.exists() {
-            copy_dir_recursive(&shards_src, &dest.join("__shards__"))?;
+        // Also copy shard manifests / cluster config when taking a full snapshot.
+        if collections.is_none() || collections.map(|c| c.is_empty()).unwrap_or(true) {
+            let shards_src = self.shards_dir();
+            if shards_src.exists() {
+                copy_dir_recursive(&shards_src, &dest.join("__shards__"))?;
+            }
+            let cluster_src = self.cluster_dir();
+            if cluster_src.exists() {
+                copy_dir_recursive(&cluster_src, &dest.join("__cluster__"))?;
+            }
         }
-        let cluster_src = self.cluster_dir();
-        if cluster_src.exists() {
-            copy_dir_recursive(&cluster_src, &dest.join("__cluster__"))?;
-        }
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         atomic_write_json(
             dest.join("snapshot_meta.json"),
             &serde_json::json!({
                 "name": name,
-                "collections": self.list_collections()?,
+                "collections": selected,
+                "created_at_unix": created_at,
+                "partial": collections.map(|c| !c.is_empty()).unwrap_or(false),
             }),
         )?;
         Ok(dest)
@@ -512,12 +541,51 @@ impl StorageEngine {
         Ok(names)
     }
 
+    pub fn snapshot_meta(&self, name: &str) -> Result<serde_json::Value> {
+        let path = self.snapshots_dir().join(name).join("snapshot_meta.json");
+        if !path.exists() {
+            return Err(TopolseaError::NotFound(format!("snapshot '{name}'")));
+        }
+        read_json(path)
+    }
+
     /// Restore collections from a snapshot (overwrites matching collection dirs).
     pub fn restore_snapshot(&self, name: &str) -> Result<()> {
+        self.restore_snapshot_opts(name, false)
+    }
+
+    /// Restore a snapshot. `replace_all=true` removes local collection dirs that are
+    /// absent from the snapshot (destructive). Default is scoped overwrite only.
+    pub fn restore_snapshot_opts(&self, name: &str, replace_all: bool) -> Result<()> {
         let src = self.snapshots_dir().join(name);
         if !src.exists() {
             return Err(TopolseaError::NotFound(format!("snapshot '{name}'")));
         }
+        let meta_path = src.join("snapshot_meta.json");
+        let snap_collections: Option<Vec<String>> = if meta_path.exists() {
+            let meta: serde_json::Value = read_json(&meta_path)?;
+            meta.get("collections")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+        } else {
+            None
+        };
+
+        if replace_all {
+            if let Some(ref keep) = snap_collections {
+                for local in self.list_collections()? {
+                    if !keep.iter().any(|k| k == &local)
+                        && local != "__snapshots__"
+                        && !local.starts_with("__")
+                    {
+                        let dest = self.collection_dir(&local);
+                        if dest.exists() {
+                            fs::remove_dir_all(&dest)?;
+                        }
+                    }
+                }
+            }
+        }
+
         for entry in fs::read_dir(&src)? {
             let entry = entry?;
             let fname = entry.file_name();
@@ -525,6 +593,16 @@ impl StorageEngine {
             if fname == "snapshot_meta.json" {
                 continue;
             }
+            // Special dirs always restored.
+            if fname == "__shards__" || fname == "__cluster__" {
+                let dest = self.root.join(fname.as_ref());
+                if dest.exists() {
+                    fs::remove_dir_all(&dest)?;
+                }
+                copy_dir_recursive(&entry.path(), &dest)?;
+                continue;
+            }
+            // Collection dirs: only overwrite when in snapshot (always true for entries here).
             let dest = self.root.join(fname.as_ref());
             if dest.exists() {
                 fs::remove_dir_all(&dest)?;

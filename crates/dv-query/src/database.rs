@@ -156,10 +156,11 @@ impl Database {
             self.storage.write_shard_routing(logical_name, &routing)?;
         }
 
-        // C10: sync-replicate to backup endpoints for this shard (best-effort).
+        // C10: sync-replicate to backup endpoints for this shard.
         let cluster = self.storage.read_shard_cluster(logical_name)?;
         if let Some(replicas) = cluster.replicas.get(&shard) {
-            let client = dv_shard_remote::ShardQueryClient::new(10_000).with_retries(1);
+            let timeout = cluster.replica_timeout_ms.max(1);
+            let client = dv_shard_remote::ShardQueryClient::new(timeout).with_retries(1);
             let req = dv_shard_remote::ReplicateUpsertRequest {
                 collection: physical.clone(),
                 ids: vec![external_id.to_string()],
@@ -169,12 +170,58 @@ impl Database {
             };
             for ep in replicas {
                 if let Err(e) = client.replicate_upsert(ep, &req) {
+                    if cluster.require_replica_ack {
+                        return Err(TopolseaError::InvalidConfig(format!(
+                            "replica upsert to {ep} failed (require_replica_ack): {e}"
+                        )));
+                    }
                     tracing::warn!("replica upsert to {ep} failed: {e}");
                 }
             }
         }
 
         Ok(id)
+    }
+
+    /// Delete a point from a sharded logical collection and sync-replicate the delete (C10).
+    pub fn delete_sharded(&mut self, logical_name: &str, external_id: &str) -> Result<()> {
+        let manifest = self.storage.read_shard_manifest(logical_name)?;
+        let mut deleted_from: Option<(usize, String)> = None;
+        for shard in 0..manifest.num_shards {
+            let physical = manifest.physical_name(shard);
+            let col = self.get_collection(&physical)?;
+            if col.read().contains_external_id(external_id) {
+                col.write().delete(external_id)?;
+                deleted_from = Some((shard, physical));
+                break;
+            }
+        }
+        let Some((shard, physical)) = deleted_from else {
+            return Err(TopolseaError::NotFound(format!(
+                "id '{external_id}' not found in sharded collection '{logical_name}'"
+            )));
+        };
+
+        let cluster = self.storage.read_shard_cluster(logical_name)?;
+        if let Some(replicas) = cluster.replicas.get(&shard) {
+            let timeout = cluster.replica_timeout_ms.max(1);
+            let client = dv_shard_remote::ShardQueryClient::new(timeout).with_retries(1);
+            let req = dv_shard_remote::ReplicateDeleteRequest {
+                collection: physical,
+                ids: vec![external_id.to_string()],
+            };
+            for ep in replicas {
+                if let Err(e) = client.replicate_delete(ep, &req) {
+                    if cluster.require_replica_ack {
+                        return Err(TopolseaError::InvalidConfig(format!(
+                            "replica delete to {ep} failed (require_replica_ack): {e}"
+                        )));
+                    }
+                    tracing::warn!("replica delete to {ep} failed: {e}");
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn query_sharded(
@@ -209,7 +256,8 @@ impl Database {
         let mut merged = Vec::new();
 
         if !remote_targets.is_empty() {
-            let remote = dv_shard_remote::fan_out_shard_queries(&remote_targets, 30_000)
+            let timeout = cluster.replica_timeout_ms.max(1_000).max(5_000);
+            let remote = dv_shard_remote::fan_out_shard_queries(&remote_targets, timeout)
                 .map_err(|e| TopolseaError::InvalidConfig(e.to_string()))?;
             for partial in remote {
                 for hit in partial.hits {
@@ -312,19 +360,69 @@ impl Database {
         self.storage.read_membership()
     }
 
+    /// Update heartbeat / health for a membership node (C10).
+    pub fn heartbeat_node(&mut self, node_id: &str, healthy: bool) -> Result<()> {
+        let mut m = self.storage.read_membership()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let Some(node) = m.nodes.iter_mut().find(|n| n.id == node_id) else {
+            return Err(TopolseaError::NotFound(format!(
+                "membership node '{node_id}' not found"
+            )));
+        };
+        node.last_heartbeat_ms = now;
+        node.healthy = healthy;
+        m.generation = m.generation.saturating_add(1);
+        self.storage.write_membership(&m)
+    }
+
+    /// Configure replica durability for a logical collection (C10).
+    pub fn set_replica_policy(
+        &mut self,
+        logical_name: &str,
+        require_replica_ack: bool,
+        replica_timeout_ms: Option<u64>,
+    ) -> Result<()> {
+        let mut cluster = self.storage.read_shard_cluster(logical_name)?;
+        cluster.require_replica_ack = require_replica_ack;
+        if let Some(ms) = replica_timeout_ms {
+            cluster.replica_timeout_ms = ms;
+        }
+        self.storage.write_shard_cluster(logical_name, &cluster)
+    }
+
     pub fn create_snapshot(&mut self, name: &str) -> Result<std::path::PathBuf> {
-        // Persist all collections first so snapshot is consistent.
+        self.create_snapshot_opts(name, None)
+    }
+
+    /// Create a snapshot of all collections, or only `collections` when provided (C14).
+    pub fn create_snapshot_opts(
+        &mut self,
+        name: &str,
+        collections: Option<&[String]>,
+    ) -> Result<std::path::PathBuf> {
         self.persist_all()?;
-        self.storage.create_snapshot(name)
+        self.storage.create_snapshot_opts(name, collections)
     }
 
     pub fn list_snapshots(&self) -> Result<Vec<String>> {
         self.storage.list_snapshots()
     }
 
+    pub fn snapshot_meta(&self, name: &str) -> Result<serde_json::Value> {
+        self.storage.snapshot_meta(name)
+    }
+
     pub fn restore_snapshot(&mut self, name: &str) -> Result<()> {
-        self.storage.restore_snapshot(name)?;
-        // Drop in-memory handles so reopen picks restored files.
+        self.restore_snapshot_opts(name, false)
+    }
+
+    /// Restore a snapshot. When `replace_all` is false, only collections present in the
+    /// snapshot are overwritten; unrelated local collections are left intact (C14).
+    pub fn restore_snapshot_opts(&mut self, name: &str, replace_all: bool) -> Result<()> {
+        self.storage.restore_snapshot_opts(name, replace_all)?;
         self.collections.clear();
         Ok(())
     }
@@ -339,6 +437,15 @@ impl Database {
 
     pub fn shard_cluster_config(&self, logical_name: &str) -> Result<ShardClusterConfig> {
         self.storage.read_shard_cluster(logical_name)
+    }
+
+    /// Sum of WAL records pending snapshot across open collections (C12).
+    pub fn sample_wal_lag(&self) -> Result<u64> {
+        let mut total = 0u64;
+        for col in self.collections.values() {
+            total = total.saturating_add(col.read().wal_pending()?);
+        }
+        Ok(total)
     }
 
     pub fn query_sharded_batch(

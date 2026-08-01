@@ -53,6 +53,25 @@ pub struct ReplicateUpsertResponse {
     pub applied: usize,
 }
 
+/// POST /topolsea/v1/replicate/delete
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicateDeleteRequest {
+    pub collection: String,
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicateDeleteResponse {
+    pub deleted: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardHealthResponse {
+    pub status: String,
+    pub collection: Option<String>,
+    pub vectors: Option<usize>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ShardRemoteError {
     #[error("HTTP {status}: {body}")]
@@ -67,3 +86,5 @@ pub enum ShardRemoteError {
 
 pub const QUERY_PATH: &str = "/topolsea/v1/shard/query";
 pub const REPLICATE_UPSERT_PATH: &str = "/topolsea/v1/replicate/upsert";
+pub const REPLICATE_DELETE_PATH: &str = "/topolsea/v1/replicate/delete";
+pub const SHARD_HEALTH_PATH: &str = "/topolsea/v1/shard/health";

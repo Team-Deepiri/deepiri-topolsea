@@ -70,14 +70,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.flush_secs > 0 {
         let flush_db = db.clone();
+        let flush_metrics = state.metrics.clone();
         let period = Duration::from_secs(args.flush_secs);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(period);
             loop {
                 ticker.tick().await;
+                let lag = flush_db.read().sample_wal_lag().unwrap_or(0);
+                flush_metrics.set_wal_lag(lag);
                 if let Err(e) = flush_db.write().persist_all() {
                     tracing::warn!("auto-flush failed: {e}");
                 } else {
+                    flush_metrics.set_wal_lag(0);
                     tracing::debug!("auto-flush snapshot complete");
                 }
             }

@@ -12,6 +12,8 @@ pub use coordinator::{
     fanout_targets_from_cluster, merge_remote_hits, ShardFanoutRequest, ShardFanoutResult,
 };
 pub use protocol::{
-    ReplicateUpsertRequest, ReplicateUpsertResponse, ShardQueryHit, ShardQueryRequest,
-    ShardQueryResponse, ShardRemoteError, QUERY_PATH, REPLICATE_UPSERT_PATH,
+    ReplicateDeleteRequest, ReplicateDeleteResponse, ReplicateUpsertRequest,
+    ReplicateUpsertResponse, ShardHealthResponse, ShardQueryHit, ShardQueryRequest,
+    ShardQueryResponse, ShardRemoteError, QUERY_PATH, REPLICATE_DELETE_PATH, REPLICATE_UPSERT_PATH,
+    SHARD_HEALTH_PATH,
 };
