@@ -1,9 +1,11 @@
 # Experiment results — Z-Column applied-math campaign
 
 Updated: 2026-07-31 (v2 after structural search fixes).  
+**Follow-up (2026-08-01):** Track M engineering (prune, height-balance, centroid graph, budgets) is implemented in PR [#16](https://github.com/Team-Deepiri/deepiri-topolsea/pull/16). **M5 re-measure on that tip is still open** — do not treat this file’s “no G123” headline as obsolete until re-probe. Roadmap: [`../NEXT_STEPS.md`](../NEXT_STEPS.md).
+
 Harness: `cargo run -p dv-bench --release --bin topolsea-math-probe -- --json`  
 Raw JSON: `/tmp/topolsea-math-probe-full.json` (local run artifact).  
-Math framing: [`Z_COLUMN_APPLIED_MATH.md`](Z_COLUMN_APPLIED_MATH.md). Roadmap: [`../NEXT_STEPS.md`](../NEXT_STEPS.md).
+Math framing: [`Z_COLUMN_APPLIED_MATH.md`](Z_COLUMN_APPLIED_MATH.md).
 
 ---
 
