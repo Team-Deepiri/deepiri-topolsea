@@ -189,6 +189,7 @@ fn http_shard_server_responds() {
     .unwrap();
     db.get_collection("fast")
         .unwrap()
+        .write()
         .upsert("a", vec![1.0, 0.0, 0.0, 0.0], None)
         .unwrap();
     db.persist_all().unwrap();

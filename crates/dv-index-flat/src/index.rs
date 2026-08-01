@@ -69,6 +69,21 @@ impl VectorIndex for FlatIndex {
     }
 
     fn search(&self, query: &[f32], top_k: usize, _ef: usize) -> Result<Vec<SearchHit>> {
+        self.search_filtered(query, top_k, None)
+    }
+
+    fn contains(&self, id: VectorId) -> bool {
+        self.vectors.contains_key(&id)
+    }
+}
+
+impl FlatIndex {
+    pub fn search_filtered(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        eligible: Option<&dyn Fn(VectorId) -> bool>,
+    ) -> Result<Vec<SearchHit>> {
         if query.len() != self.dimension {
             return Err(TopolseaError::DimensionMismatch {
                 expected: self.dimension,
@@ -81,6 +96,11 @@ impl VectorIndex for FlatIndex {
 
         let mut heap = TopKHeap::new(top_k);
         for (&id, vec) in &self.vectors {
+            if let Some(pred) = eligible {
+                if !pred(id) {
+                    continue;
+                }
+            }
             let dist = distance(self.metric, query, vec);
             heap.push(Candidate { id, distance: dist });
         }
@@ -90,10 +110,6 @@ impl VectorIndex for FlatIndex {
             .into_iter()
             .map(|c| SearchHit::new(c.id, c.distance))
             .collect())
-    }
-
-    fn contains(&self, id: VectorId) -> bool {
-        self.vectors.contains_key(&id)
     }
 }
 

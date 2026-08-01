@@ -48,17 +48,24 @@ fn end_to_end_zcolumn_collection() {
         .get_or_create_collection_with_config("zcol", 4, DistanceMetric::Cosine, IndexKind::ZColumn)
         .unwrap();
 
-    col.upsert("a", vec![1.0, 0.0, 0.0, 0.0], Some(json!({"k": "1"})))
+    col.write()
+        .upsert("a", vec![1.0, 0.0, 0.0, 0.0], Some(json!({"k": "1"})))
         .unwrap();
-    col.upsert("b", vec![0.9, 0.1, 0.0, 0.0], Some(json!({"k": "2"})))
+    col.write()
+        .upsert("b", vec![0.9, 0.1, 0.0, 0.0], Some(json!({"k": "2"})))
         .unwrap();
-    col.upsert("c", vec![0.0, 1.0, 0.0, 0.0], None).unwrap();
+    col.write()
+        .upsert("c", vec![0.0, 1.0, 0.0, 0.0], None)
+        .unwrap();
 
-    let results = col.query(&[1.0, 0.0, 0.0, 0.0], 2, None, 64).unwrap();
+    let results = col
+        .read()
+        .query(&[1.0, 0.0, 0.0, 0.0], 2, None, 64)
+        .unwrap();
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].id.as_deref(), Some("a"));
 
-    col.persist().unwrap();
+    col.write().persist().unwrap();
 
     let manifest = db
         .storage()
@@ -69,10 +76,13 @@ fn end_to_end_zcolumn_collection() {
 
     let mut db2 = Database::open(dir.path()).unwrap();
     let col2 = db2.get_collection("zcol").unwrap();
-    assert_eq!(col2.len(), 3);
-    assert_eq!(col2.config().index_kind, IndexKind::ZColumn);
+    assert_eq!(col2.read().len(), 3);
+    assert_eq!(col2.read().config().index_kind, IndexKind::ZColumn);
 
-    let results2 = col2.query(&[1.0, 0.0, 0.0, 0.0], 2, None, 64).unwrap();
+    let results2 = col2
+        .read()
+        .query(&[1.0, 0.0, 0.0, 0.0], 2, None, 64)
+        .unwrap();
     assert_eq!(results2[0].id.as_deref(), Some("a"));
 }
 
@@ -147,9 +157,13 @@ fn zcolumn_segment_files_roundtrip() {
         .get_or_create_collection_with_config("seg", 4, DistanceMetric::L2, IndexKind::ZColumn)
         .unwrap();
 
-    col.upsert("x", vec![1.0, 0.0, 0.0, 0.0], None).unwrap();
-    col.upsert("y", vec![0.0, 1.0, 0.0, 0.0], None).unwrap();
-    col.persist().unwrap();
+    col.write()
+        .upsert("x", vec![1.0, 0.0, 0.0, 0.0], None)
+        .unwrap();
+    col.write()
+        .upsert("y", vec![0.0, 1.0, 0.0, 0.0], None)
+        .unwrap();
+    col.write().persist().unwrap();
 
     let mut total_cells = 0usize;
     for layer in 0..3u8 {
@@ -178,15 +192,20 @@ fn zcolumn_disaster_recovery_from_vectors_bin() {
     let col = db
         .get_or_create_collection_with_config("dr", 4, DistanceMetric::L2, IndexKind::ZColumn)
         .unwrap();
-    col.upsert("a", vec![1.0, 0.0, 0.0, 0.0], None).unwrap();
-    col.persist().unwrap();
+    col.write()
+        .upsert("a", vec![1.0, 0.0, 0.0, 0.0], None)
+        .unwrap();
+    col.write().persist().unwrap();
 
     std::fs::remove_file(dir.path().join("dr/index.bin")).unwrap();
 
     let mut db2 = Database::open(dir.path()).unwrap();
     let col2 = db2.get_collection("dr").unwrap();
-    assert_eq!(col2.len(), 1);
-    let results = col2.query(&[1.0, 0.0, 0.0, 0.0], 1, None, 64).unwrap();
+    assert_eq!(col2.read().len(), 1);
+    let results = col2
+        .read()
+        .query(&[1.0, 0.0, 0.0, 0.0], 1, None, 64)
+        .unwrap();
     assert_eq!(results[0].id.as_deref(), Some("a"));
 }
 
@@ -199,9 +218,9 @@ fn zcolumn_query_explain() {
         .unwrap();
     for i in 0..30u64 {
         let v: Vec<f32> = (0..8).map(|d| ((i + d) as f32 * 0.1).sin()).collect();
-        col.upsert(&format!("v{i}"), v, None).unwrap();
+        col.write().upsert(&format!("v{i}"), v, None).unwrap();
     }
-    let (results, explain) = col.query_explain(&[0.1; 8], 5, None, 32).unwrap();
+    let (results, explain) = col.read().query_explain(&[0.1; 8], 5, None, 32).unwrap();
     assert!(!results.is_empty());
     assert!(!explain.column_paths.is_empty());
     assert!(explain.planner_reason.is_some());

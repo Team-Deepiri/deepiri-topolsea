@@ -132,6 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Info { name } => {
             let col = db.get_collection(&name)?;
+            let col = col.read();
             println!("name: {}", col.name());
             println!("dimension: {}", col.config().dimension);
             println!("metric: {}", col.config().metric);
@@ -148,6 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             explain,
         } => {
             let col = db.get_collection(&collection)?;
+            let col = col.read();
             if vector.len() != col.config().dimension {
                 return Err(format!(
                     "vector dimension {} != collection dimension {}",
@@ -244,6 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 let col = db.get_collection(&collection)?;
+                let col = col.read();
                 let dim = col.config().dimension;
                 for (i, q) in queries.iter().enumerate() {
                     if q.len() != dim {

@@ -22,7 +22,7 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        Ok(col.len())
+        Ok(col.read().len())
     }
 
     #[pyo3(signature = (ids, vectors, metadatas=None))]
@@ -59,7 +59,7 @@ impl PyCollection {
                         python_to_json(py, &bound).unwrap_or(Value::Null)
                     })
                 };
-                col.upsert(&id, vec, meta).map_err(|e| {
+                col.write().upsert(&id, vec, meta).map_err(|e| {
                     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
                 })?;
             }
@@ -73,7 +73,8 @@ impl PyCollection {
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         for id in ids {
-            col.delete(&id)
+            col.write()
+                .delete(&id)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         }
         Ok(())
@@ -96,6 +97,7 @@ impl PyCollection {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         let results = col
+            .read()
             .query(&query_vector, top_k, filter_rust.as_ref(), ef)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
@@ -131,6 +133,7 @@ impl PyCollection {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         let batches = col
+            .read()
             .query_batch(&refs, top_k, filter_rust.as_ref(), ef)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
@@ -157,7 +160,8 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        col.persist()
+        col.write()
+            .persist()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         Ok(())
     }
@@ -178,6 +182,7 @@ impl PyCollection {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         let (results, explain) = col
+            .read()
             .query_explain(&query_vector, top_k, filter_rust.as_ref(), ef)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
@@ -211,7 +216,7 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        match col.zcolumn_stats() {
+        match col.read().zcolumn_stats() {
             Some(v) => json_to_python(py, &v),
             None => Ok(py.None()),
         }
