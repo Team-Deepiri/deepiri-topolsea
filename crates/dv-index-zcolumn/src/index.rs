@@ -268,6 +268,12 @@ impl ZColumnIndex {
         Ok((hits, explain))
     }
 
+    /// Collapse/promote columns from the access ledger.
+    ///
+    /// Operational note: Phase A calls this from `Collection::persist()` / auto-flush,
+    /// not after every query. `record_access` only queues ledger hits so readers stay
+    /// `&self`. If access patterns shift rapidly between persists, search quality can
+    /// lag until the next flush; query-count-triggered rebalance is a Track M option.
     pub fn rebalance(&mut self) {
         let vectors = self.vectors.clone();
         self.compaction.collapse_and_promote_with_ratio(

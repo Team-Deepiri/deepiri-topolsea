@@ -307,10 +307,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tls_key,
         } => {
             if tls_cert.is_some() || tls_key.is_some() {
-                // TLS path uses topolsea-server binary args; re-exec via library main pattern.
                 eprintln!(
-                    "TLS: prefer `topolsea-server --tls-cert … --tls-key …`; \
-                     forwarding to embedded axum with TLS requires the server binary."
+                    "note: `topolsea serve` ignores --tls-cert/--tls-key. \
+                     For TLS, run: topolsea-server --tls-cert <cert.pem> --tls-key <key.pem> ..."
                 );
             }
             let _ = (tls_cert, tls_key);

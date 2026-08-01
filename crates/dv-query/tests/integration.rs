@@ -123,6 +123,30 @@ fn filter_ops_ne_gt_in() {
             .len(),
         2
     );
+
+    let and = Filter::from_json(&json!({
+        "$and": [{"tag": {"$ne": "x"}}, {"n": {"$gte": 5}}]
+    }))
+    .unwrap();
+    let hits = col.read().query(&[0.0, 0.0], 10, Some(&and), 0).unwrap();
+    assert_eq!(hits.len(), 2);
+
+    let or = Filter::from_json(&json!({
+        "$or": [{"tag": "x"}, {"n": {"$gt": 9}}]
+    }))
+    .unwrap();
+    assert_eq!(
+        col.read()
+            .query(&[0.0, 0.0], 10, Some(&or), 0)
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let multi = Filter::from_json(&json!({"tag": "y", "n": {"$lte": 10}})).unwrap();
+    let hits = col.read().query(&[0.0, 0.0], 10, Some(&multi), 0).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id.as_deref(), Some("b"));
 }
 
 #[test]
