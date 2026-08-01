@@ -6,8 +6,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use dv_metadata::Filter;
+use dv_query::{FusionMethod, HybridOptions};
 use dv_shard_remote::{ShardQueryRequest, ShardQueryResponse, QUERY_PATH};
-use dv_types::{CollectionConfig, DistanceMetric, IndexKind};
+use dv_types::{CollectionConfig, DistanceMetric, IndexKind, IvfConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::str::FromStr;
@@ -29,8 +30,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/collections/:name/points", put(upsert))
         .route("/v1/collections/:name/search", post(search))
         .route("/v1/collections/:name/hybrid", post(hybrid_search))
+        .route("/v1/collections/:name/sparse", post(sparse_search))
         .route("/v1/collections/:name/explain", post(explain))
         .route("/v1/collections/:name/persist", post(persist_collection))
+        .route("/v1/collections/:name/compact", post(compact_collection))
         .route("/v1/persist", post(persist_all))
         .route(QUERY_PATH, post(shard_query))
         .layer(CorsLayer::permissive())
@@ -71,6 +74,22 @@ struct CreateCollectionBody {
     metric: String,
     #[serde(default = "default_index")]
     index: String,
+    #[serde(default)]
+    ivf: Option<IvfCreateConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IvfCreateConfig {
+    #[serde(default)]
+    nlist: Option<usize>,
+    #[serde(default)]
+    nprobe: Option<usize>,
+    #[serde(default)]
+    pq_m: Option<usize>,
+    #[serde(default)]
+    seed: Option<u64>,
+    #[serde(default)]
+    memory_bound: Option<bool>,
 }
 
 fn default_metric() -> String {
@@ -102,6 +121,26 @@ async fn create_collection(
         config = config.with_zcolumn_index();
     } else if index_kind == IndexKind::Ivf {
         config = config.with_ivf_index();
+        let mut ivf = IvfConfig::default();
+        if let Some(c) = &body.ivf {
+            if let Some(n) = c.nlist {
+                ivf.nlist = n;
+            }
+            if let Some(n) = c.nprobe {
+                ivf.nprobe = n;
+            }
+            if let Some(m) = c.pq_m {
+                ivf.pq_m = Some(m);
+                ivf.memory_bound = c.memory_bound.unwrap_or(true);
+            }
+            if let Some(s) = c.seed {
+                ivf.seed = s;
+            }
+            if let Some(mb) = c.memory_bound {
+                ivf.memory_bound = mb;
+            }
+        }
+        config.ivf = ivf;
     }
     state
         .db
@@ -195,6 +234,9 @@ struct SearchBody {
     filter: Option<Value>,
     #[serde(default = "default_ef")]
     ef: usize,
+    /// IVF nprobe override (also accepted via `ef` for IndexKind::Ivf).
+    #[serde(default)]
+    nprobe: Option<usize>,
 }
 
 fn default_top_k() -> usize {
@@ -229,9 +271,10 @@ async fn search(
     let col = db
         .get_collection(&name)
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let ef = body.nprobe.unwrap_or(body.ef);
     let results = col
         .read()
-        .query(&body.vector, body.top_k, filter.as_ref(), body.ef)
+        .query(&body.vector, body.top_k, filter.as_ref(), ef)
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let hits: Vec<HitOut> = results
         .into_iter()
@@ -257,6 +300,12 @@ struct HybridBody {
     ef: usize,
     #[serde(default)]
     rrf_k: Option<f32>,
+    #[serde(default)]
+    fusion: Option<String>,
+    #[serde(default)]
+    dense_weight: Option<f32>,
+    #[serde(default)]
+    prefetch: Option<usize>,
 }
 
 async fn hybrid_search(
@@ -272,20 +321,27 @@ async fn hybrid_search(
         .map(Filter::from_json)
         .transpose()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let mut opts = HybridOptions::new(body.top_k, body.ef);
+    opts.rrf_k = body.rrf_k;
+    opts.dense_weight = body.dense_weight;
+    opts.prefetch = body.prefetch;
+    opts.fusion = match body
+        .fusion
+        .as_deref()
+        .unwrap_or("rrf")
+        .to_lowercase()
+        .as_str()
+    {
+        "linear" | "weighted" => FusionMethod::Linear,
+        _ => FusionMethod::Rrf,
+    };
     let mut db = state.db.write();
     let col = db
         .get_collection(&name)
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let results = col
         .read()
-        .query_hybrid(
-            &body.vector,
-            &body.text,
-            body.top_k,
-            filter.as_ref(),
-            body.ef,
-            body.rrf_k,
-        )
+        .query_hybrid_opts(&body.vector, &body.text, filter.as_ref(), &opts)
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let hits: Vec<HitOut> = results
         .into_iter()
@@ -296,7 +352,52 @@ async fn hybrid_search(
             metadata: r.metadata,
         })
         .collect();
-    Ok(Json(json!({"hits": hits, "fusion": "rrf"})))
+    Ok(Json(json!({
+        "hits": hits,
+        "fusion": format!("{:?}", opts.fusion).to_ascii_lowercase(),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SparseBody {
+    text: String,
+    #[serde(default = "default_top_k")]
+    top_k: usize,
+    #[serde(default)]
+    filter: Option<Value>,
+}
+
+async fn sparse_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(body): Json<SparseBody>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&headers, &state)?;
+    let filter = body
+        .filter
+        .as_ref()
+        .map(Filter::from_json)
+        .transpose()
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let mut db = state.db.write();
+    let col = db
+        .get_collection(&name)
+        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let results = col
+        .read()
+        .query_sparse(&body.text, body.top_k, filter.as_ref())
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let hits: Vec<HitOut> = results
+        .into_iter()
+        .map(|r| HitOut {
+            id: r.id,
+            distance: r.distance,
+            score: r.score,
+            metadata: r.metadata,
+        })
+        .collect();
+    Ok(Json(json!({"hits": hits})))
 }
 
 async fn explain(
@@ -349,6 +450,26 @@ async fn persist_collection(
         .persist()
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(json!({"persisted": name})))
+}
+
+async fn compact_collection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&headers, &state)?;
+    let mut db = state.db.write();
+    let col = db
+        .get_collection(&name)
+        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    col.write()
+        .compact_segments()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let stats = col
+        .read()
+        .segment_stats()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({"compacted": name, "segments": stats})))
 }
 
 async fn persist_all(

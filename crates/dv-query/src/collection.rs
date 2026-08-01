@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::hybrid::{reciprocal_rank_fusion, DEFAULT_RRF_K};
+use crate::hybrid::{fuse, HybridOptions};
 use crate::planner::{IndexPlanner, QueryPlannerInput};
 use crate::query::{QueryExplainResult, QueryResult};
 
@@ -114,7 +114,10 @@ impl IndexBackend {
                 let (hits, _) = z.search_with_explain_filtered(query, top_k, ef, eligible)?;
                 Ok(hits)
             }
-            IndexBackend::Ivf(i) => i.search_filtered(query, top_k, None, eligible),
+            IndexBackend::Ivf(i) => {
+                let nprobe = if ef > 0 { Some(ef) } else { None };
+                i.search_filtered(query, top_k, nprobe, eligible)
+            }
         }
     }
 
@@ -228,6 +231,28 @@ impl IndexBackend {
         Ok(())
     }
 
+    /// Recover ANN structure from sealed segments when `index.bin` is empty/missing.
+    fn rebuild_from_segments_if_empty(
+        &mut self,
+        storage: &StorageEngine,
+        name: &str,
+    ) -> Result<()> {
+        if !self.as_ref().is_empty() {
+            return Ok(());
+        }
+        let vectors = storage.read_vectors(name)?;
+        for (id, data) in vectors {
+            self.as_mut().insert(id, Vector::new(data))?;
+        }
+        Ok(())
+    }
+
+    fn release_ivf_raw(&mut self) {
+        if let IndexBackend::Ivf(i) = self {
+            i.release_raw_if_memory_bound();
+        }
+    }
+
     fn zcolumn_search_explain(
         &self,
         query: &[f32],
@@ -311,6 +336,10 @@ impl Collection {
         col.index.load_segments(&col.storage, &name)?;
         col.index
             .rebuild_zcolumn_from_vectors(&col.storage, &name, kind)?;
+        if kind != IndexKind::ZColumn {
+            col.index
+                .rebuild_from_segments_if_empty(&col.storage, &name)?;
+        }
 
         // Replay durable mutations after last snapshot.
         col.replay_wal()?;
@@ -631,7 +660,7 @@ impl Collection {
             .collect()
     }
 
-    /// Hybrid dense + BM25 search fused with Reciprocal Rank Fusion.
+    /// Hybrid dense + BM25 search with RRF or linear score fusion.
     pub fn query_hybrid(
         &self,
         query_vector: &[f32],
@@ -641,8 +670,20 @@ impl Collection {
         ef: usize,
         rrf_k: Option<f32>,
     ) -> Result<Vec<QueryResult>> {
-        let fetch = top_k.saturating_mul(5).max(top_k);
-        let dense = self.query(query_vector, fetch, filter, ef)?;
+        let mut opts = HybridOptions::new(top_k, ef);
+        opts.rrf_k = rrf_k;
+        self.query_hybrid_opts(query_vector, text_query, filter, &opts)
+    }
+
+    pub fn query_hybrid_opts(
+        &self,
+        query_vector: &[f32],
+        text_query: &str,
+        filter: Option<&Filter>,
+        opts: &HybridOptions,
+    ) -> Result<Vec<QueryResult>> {
+        let fetch = opts.prefetch_k();
+        let dense = self.query(query_vector, fetch, filter, opts.ef)?;
         let dense_list: Vec<(VectorId, f32)> =
             dense.iter().map(|r| (r.internal_id, r.score)).collect();
 
@@ -657,14 +698,10 @@ impl Collection {
             });
         }
 
-        let fused = reciprocal_rank_fusion(
-            &[dense_list, sparse_hits],
-            top_k,
-            rrf_k.unwrap_or(DEFAULT_RRF_K),
-        );
+        let fused = fuse(dense_list, sparse_hits, opts);
 
         let mut results = Vec::with_capacity(fused.len());
-        for (id, rrf_score) in fused {
+        for (id, fused_score) in fused {
             let ext = self
                 .internal_to_external
                 .get(&id)
@@ -680,7 +717,7 @@ impl Collection {
                 id: ext.clone(),
                 internal_id: id,
                 distance,
-                score: rrf_score,
+                score: fused_score,
                 metadata: ext.and_then(|e| self.metadata.get(&e).cloned()),
             });
         }
@@ -688,8 +725,25 @@ impl Collection {
     }
 
     /// Sparse-only BM25 search (document text previously upserted).
-    pub fn query_sparse(&self, text_query: &str, top_k: usize) -> Result<Vec<QueryResult>> {
-        let hits = self.sparse.search(text_query, top_k);
+    pub fn query_sparse(
+        &self,
+        text_query: &str,
+        top_k: usize,
+        filter: Option<&Filter>,
+    ) -> Result<Vec<QueryResult>> {
+        let mut hits = self
+            .sparse
+            .search(text_query, top_k.saturating_mul(5).max(top_k));
+        if let Some(f) = filter {
+            hits.retain(|(id, _)| {
+                let Some(ext) = self.internal_to_external.get(id) else {
+                    return false;
+                };
+                let meta = self.metadata.get(ext.as_str()).unwrap_or(&Value::Null);
+                f.matches(meta)
+            });
+        }
+        hits.truncate(top_k);
         let mut results = Vec::with_capacity(hits.len());
         for (id, score) in hits {
             let ext = self
@@ -836,9 +890,6 @@ impl Collection {
     pub fn persist(&mut self) -> Result<()> {
         self.index.rebalance_if_zcolumn();
 
-        let index_bytes = self.index.encode_bytes()?;
-        self.storage.write_index_blob(self.name(), &index_bytes)?;
-
         if self.config.index_kind == IndexKind::ZColumn {
             self.index
                 .persist_segments(&self.storage, self.name(), &self.config)?;
@@ -853,6 +904,7 @@ impl Collection {
         meta_map.insert("__id_map__".to_string(), serde_json::to_value(&id_map)?);
         self.storage.write_metadata_map(self.name(), &meta_map)?;
 
+        // Seal full-precision vectors while still in RAM (before IVF memory-bound drop).
         let records: Vec<(VectorId, Vec<f32>)> = self
             .index
             .ids()
@@ -866,8 +918,13 @@ impl Collection {
             })
             .collect();
         let refs: Vec<_> = records.iter().map(|(id, v)| (*id, v.as_slice())).collect();
-        // B7: incremental sealed segments (no full-corpus rewrite of prior segs).
         self.storage.flush_vector_segments(self.name(), &refs)?;
+
+        // PQ memory-bound: drop raw vectors now that segments hold them.
+        self.index.release_ivf_raw();
+
+        let index_bytes = self.index.encode_bytes()?;
+        self.storage.write_index_blob(self.name(), &index_bytes)?;
 
         let sparse_bytes = self.sparse.to_bytes()?;
         self.storage.write_sparse_blob(self.name(), &sparse_bytes)?;
@@ -890,6 +947,28 @@ impl Collection {
             wal.truncate()?;
         }
         self.snapshot_seq = 0;
+
+        // Auto-compact when soft-deletes or segment count grow large.
+        let _ = self.maybe_auto_compact();
+        Ok(())
+    }
+
+    /// Rewrite sealed segments into a single live segment (clears tombstones).
+    pub fn compact_segments(&mut self) -> Result<()> {
+        self.storage.compact_vector_segments(self.name())
+    }
+
+    pub fn segment_stats(&self) -> Result<serde_json::Value> {
+        self.storage.segment_stats(self.name())
+    }
+
+    fn maybe_auto_compact(&mut self) -> Result<()> {
+        let stats = self.storage.segment_stats(self.name())?;
+        let deleted = stats.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0);
+        let segments = stats.get("segments").and_then(|v| v.as_u64()).unwrap_or(0);
+        if deleted >= 1_000 || segments >= 32 {
+            self.compact_segments()?;
+        }
         Ok(())
     }
 }

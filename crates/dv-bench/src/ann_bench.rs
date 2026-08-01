@@ -160,6 +160,7 @@ fn build_index(
                     nprobe: 8,
                     pq_m: None,
                     seed: 42,
+                    memory_bound: false,
                 },
             );
             for (id, v) in data {
@@ -234,6 +235,19 @@ pub fn run_ann_bench(
         build_secs,
         notes,
     }
+}
+
+/// Compare Flat / HNSW / IVF on the same dataset (equal corpus; report side-by-side).
+pub fn run_equal_corpus_compare(
+    dataset_name: &str,
+    ds: &AnnDataset,
+    metric: DistanceMetric,
+    top_k: usize,
+) -> Vec<AnnBenchReport> {
+    [IndexKind::Flat, IndexKind::Hnsw, IndexKind::Ivf]
+        .into_iter()
+        .map(|kind| run_ann_bench(dataset_name, ds, kind, metric, top_k))
+        .collect()
 }
 
 pub fn try_load_sift_or_synthetic(data_dir: Option<PathBuf>) -> (String, AnnDataset) {

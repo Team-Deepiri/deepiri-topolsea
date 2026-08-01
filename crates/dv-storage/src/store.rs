@@ -207,6 +207,24 @@ impl StorageEngine {
         Ok(())
     }
 
+    pub fn compact_vector_segments(&self, name: &str) -> Result<()> {
+        let config = self.load_config(name)?;
+        let store = crate::SegmentStore::open(self.segments_dir(name), config.dimension)?;
+        store.compact()
+    }
+
+    pub fn segment_stats(&self, name: &str) -> Result<serde_json::Value> {
+        let config = self.load_config(name)?;
+        let store = crate::SegmentStore::open(self.segments_dir(name), config.dimension)?;
+        let manifest = store.load_manifest()?;
+        Ok(serde_json::json!({
+            "segments": manifest.segments.len(),
+            "deleted": manifest.deleted_ids.len(),
+            "next_segment_id": manifest.next_segment_id,
+            "dimension": manifest.dimension,
+        }))
+    }
+
     pub fn write_sparse_blob(&self, name: &str, data: &[u8]) -> Result<()> {
         atomic_write_bytes(self.collection_dir(name).join("sparse.bin"), data)
     }

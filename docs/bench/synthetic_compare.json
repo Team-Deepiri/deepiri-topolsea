@@ -1,0 +1,38 @@
+[
+  {
+    "dataset": "synthetic_2k_d32",
+    "index": "Flat",
+    "metric": "l2",
+    "n_base": 2000,
+    "n_queries": 50,
+    "top_k": 10,
+    "recall_at_k": 1.0,
+    "qps": 29917.171319484874,
+    "build_secs": 0.000264095,
+    "notes": "Exact baseline"
+  },
+  {
+    "dataset": "synthetic_2k_d32",
+    "index": "Hnsw",
+    "metric": "l2",
+    "n_base": 2000,
+    "n_queries": 50,
+    "top_k": 10,
+    "recall_at_k": 1.0,
+    "qps": 26384.054743747507,
+    "build_secs": 0.301121353,
+    "notes": "Product-default ANN path"
+  },
+  {
+    "dataset": "synthetic_2k_d32",
+    "index": "Ivf",
+    "metric": "l2",
+    "n_base": 2000,
+    "n_queries": 50,
+    "top_k": 10,
+    "recall_at_k": 1.0,
+    "qps": 30922.453906990206,
+    "build_secs": 0.00145928,
+    "notes": "Memory-bound IVF path (optional PQ)"
+  }
+]

@@ -91,6 +91,15 @@ pub fn encode_pq(codebooks: &PqCodebooks, vector: &[f32]) -> Vec<u8> {
     codes
 }
 
+/// Lossy reconstruct a vector from PQ codes (centroid concatenation).
+pub fn decode_pq(codebooks: &PqCodebooks, codes: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(codebooks.m * codebooks.sub_dim);
+    for (subspace, &code) in codes.iter().enumerate().take(codebooks.m) {
+        out.extend_from_slice(&codebooks.centroids[subspace][code as usize]);
+    }
+    out
+}
+
 pub fn asymmetric_distance(codebooks: &PqCodebooks, query: &[f32], codes: &[u8]) -> f32 {
     let mut dist = 0.0f32;
     for (subspace, &code) in codes.iter().enumerate().take(codebooks.m) {

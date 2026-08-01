@@ -126,7 +126,7 @@ impl PyCollection {
         Ok(list.into())
     }
 
-    #[pyo3(signature = (query_vector, text_query, top_k=10, filter=None, ef=64, rrf_k=None))]
+    #[pyo3(signature = (query_vector, text_query, top_k=10, filter=None, ef=64, rrf_k=None, fusion=None, dense_weight=None, prefetch=None))]
     fn query_hybrid(
         &self,
         py: Python<'_>,
@@ -136,8 +136,19 @@ impl PyCollection {
         filter: Option<&Bound<'_, PyAny>>,
         ef: usize,
         rrf_k: Option<f32>,
+        fusion: Option<&str>,
+        dense_weight: Option<f32>,
+        prefetch: Option<usize>,
     ) -> PyResult<PyObject> {
         let filter_rust = filter.map(|f| python_filter_to_rust(f)).transpose()?;
+        let mut opts = dv_query::HybridOptions::new(top_k, ef);
+        opts.rrf_k = rrf_k;
+        opts.dense_weight = dense_weight;
+        opts.prefetch = prefetch;
+        opts.fusion = match fusion.unwrap_or("rrf").to_lowercase().as_str() {
+            "linear" | "weighted" => dv_query::FusionMethod::Linear,
+            _ => dv_query::FusionMethod::Rrf,
+        };
 
         let mut db = self.db.lock().unwrap();
         let col = db
@@ -146,16 +157,40 @@ impl PyCollection {
 
         let results = col
             .read()
-            .query_hybrid(
-                &query_vector,
-                text_query,
-                top_k,
-                filter_rust.as_ref(),
-                ef,
-                rrf_k,
-            )
+            .query_hybrid_opts(&query_vector, text_query, filter_rust.as_ref(), &opts)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
+        let list = PyList::empty_bound(py);
+        for r in results {
+            let dict = PyDict::new_bound(py);
+            dict.set_item("id", r.id)?;
+            dict.set_item("distance", r.distance)?;
+            dict.set_item("score", r.score)?;
+            if let Some(meta) = r.metadata {
+                dict.set_item("metadata", json_to_python(py, &meta)?)?;
+            }
+            list.append(dict)?;
+        }
+        Ok(list.into())
+    }
+
+    #[pyo3(signature = (text_query, top_k=10, filter=None))]
+    fn query_sparse(
+        &self,
+        py: Python<'_>,
+        text_query: &str,
+        top_k: usize,
+        filter: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let filter_rust = filter.map(|f| python_filter_to_rust(f)).transpose()?;
+        let mut db = self.db.lock().unwrap();
+        let col = db
+            .get_collection(&self.name)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        let results = col
+            .read()
+            .query_sparse(text_query, top_k, filter_rust.as_ref())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         let list = PyList::empty_bound(py);
         for r in results {
             let dict = PyDict::new_bound(py);

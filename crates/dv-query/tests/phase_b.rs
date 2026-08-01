@@ -120,6 +120,7 @@ fn ivf_index_roundtrip() {
         nprobe: 4,
         pq_m: Some(2),
         seed: 3,
+        memory_bound: true,
     };
     db.create_collection(cfg).unwrap();
     let col = db.get_collection("ivf").unwrap();
@@ -151,4 +152,56 @@ fn ivf_index_roundtrip() {
         }),
         "expected neighbor of v10 in {ids:?}"
     );
+}
+
+#[test]
+fn compact_collapses_segments() {
+    let dir = tempdir().unwrap();
+    let mut db = Database::open(dir.path()).unwrap();
+    let cfg = CollectionConfig::new("cmp", 2, DistanceMetric::L2).with_flat_index();
+    db.create_collection(cfg).unwrap();
+    let col = db.get_collection("cmp").unwrap();
+    {
+        let mut g = col.write();
+        g.upsert("a", vec![1.0, 0.0], None).unwrap();
+        g.persist().unwrap();
+        g.upsert("b", vec![0.0, 1.0], None).unwrap();
+        g.persist().unwrap();
+        g.delete("a").unwrap();
+        g.persist().unwrap();
+        let stats = g.segment_stats().unwrap();
+        assert!(stats["segments"].as_u64().unwrap() >= 2);
+        g.compact_segments().unwrap();
+        let after = g.segment_stats().unwrap();
+        assert_eq!(after["segments"].as_u64().unwrap(), 1);
+        assert_eq!(after["deleted"].as_u64().unwrap(), 0);
+    }
+}
+
+#[test]
+fn linear_fusion_and_sparse_endpoint_path() {
+    use dv_query::{FusionMethod, HybridOptions};
+    let dir = tempdir().unwrap();
+    let mut db = Database::open(dir.path()).unwrap();
+    db.create_collection(CollectionConfig::new("lin", 4, DistanceMetric::L2).with_flat_index())
+        .unwrap();
+    let col = db.get_collection("lin").unwrap();
+    {
+        let mut g = col.write();
+        g.upsert_with_text("d1", vec![1.0, 0.0, 0.0, 0.0], None, Some("alpha beta"))
+            .unwrap();
+        g.upsert_with_text("d2", vec![0.0, 1.0, 0.0, 0.0], None, Some("gamma delta"))
+            .unwrap();
+    }
+    let sparse = col.read().query_sparse("alpha", 5, None).unwrap();
+    assert_eq!(sparse[0].id.as_deref(), Some("d1"));
+
+    let mut opts = HybridOptions::new(1, 16);
+    opts.fusion = FusionMethod::Linear;
+    opts.dense_weight = Some(0.0);
+    let hits = col
+        .read()
+        .query_hybrid_opts(&[1.0, 0.0, 0.0, 0.0], "gamma", None, &opts)
+        .unwrap();
+    assert_eq!(hits[0].id.as_deref(), Some("d2"));
 }

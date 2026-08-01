@@ -122,6 +122,10 @@ pub struct IvfConfig {
     #[serde(default)]
     pub pq_m: Option<usize>,
     pub seed: u64,
+    /// Drop full-precision vectors from RAM after they are sealed to segments
+    /// (PQ memory-bound path). Search uses codes; `get_vector` reconstructs.
+    #[serde(default)]
+    pub memory_bound: bool,
 }
 
 impl Default for IvfConfig {
@@ -131,7 +135,17 @@ impl Default for IvfConfig {
             nprobe: 8,
             pq_m: None,
             seed: 42,
+            memory_bound: false,
         }
+    }
+}
+
+impl IvfConfig {
+    /// Convenience: IVF + PQ with memory-bound raw drop enabled.
+    pub fn with_pq(mut self, pq_m: usize) -> Self {
+        self.pq_m = Some(pq_m);
+        self.memory_bound = true;
+        self
     }
 }
 
