@@ -57,6 +57,22 @@ fn default_max_fallback_columns() -> usize {
     96
 }
 
+fn default_touch_budget_frac() -> f32 {
+    0.5
+}
+
+fn default_graph_degree() -> usize {
+    8
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_column_height_ratio() -> f32 {
+    4.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZColumnConfig {
     pub outer_grid: (u16, u16),
@@ -79,6 +95,31 @@ pub struct ZColumnConfig {
     /// Cap on extra columns scanned in ranked fallback (never full corpus).
     #[serde(default = "default_max_fallback_columns")]
     pub max_fallback_columns: usize,
+    /// Hard candidate touch budget as a fraction of N (M2). `None` disables.
+    #[serde(default)]
+    pub touch_budget: Option<usize>,
+    /// Default touch budget = frac * N when `touch_budget` is unset (M2).
+    #[serde(default = "default_touch_budget_frac")]
+    pub touch_budget_frac: f32,
+    /// Walk neighbor graph over column centroids (M-graph).
+    #[serde(default = "default_true")]
+    pub use_centroid_graph: bool,
+    /// kNN degree for centroid graph.
+    #[serde(default = "default_graph_degree")]
+    pub graph_degree: usize,
+    /// Only run ring/ranked fallback when heap < k or score gap (M1).
+    #[serde(default = "default_true")]
+    pub conditional_fallback: bool,
+    /// Relative score gap that triggers conditional fallback (worst/best).
+    #[serde(default = "default_score_gap")]
+    pub fallback_score_gap: f32,
+    /// Split columns taller than this × mean height (M4).
+    #[serde(default = "default_max_column_height_ratio")]
+    pub max_column_height_ratio: f32,
+}
+
+fn default_score_gap() -> f32 {
+    2.0
 }
 
 impl Default for ZColumnConfig {
@@ -90,11 +131,18 @@ impl Default for ZColumnConfig {
             rebalance_interval: 1000,
             ef_search: 128,
             projection_seed: 42,
-            hybrid_rerank_pool: 5,
+            hybrid_rerank_pool: 3,
             decay_half_life_ms: 3_600_000,
             fallback_beam_radius: 2,
             max_fallback_rings: 8,
             max_fallback_columns: 96,
+            touch_budget: None,
+            touch_budget_frac: 0.5,
+            use_centroid_graph: true,
+            graph_degree: 8,
+            conditional_fallback: true,
+            fallback_score_gap: 2.0,
+            max_column_height_ratio: 4.0,
         }
     }
 }

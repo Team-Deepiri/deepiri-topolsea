@@ -39,7 +39,10 @@ pub fn router(state: AppState) -> Router {
             get(get_collection).delete(delete_collection),
         )
         .route("/v1/collections/:name/upsert", put(upsert))
-        .route("/v1/collections/:name/points", put(upsert).delete(delete_points))
+        .route(
+            "/v1/collections/:name/points",
+            put(upsert).delete(delete_points),
+        )
         .route("/v1/collections/:name/search", post(search))
         .route("/v1/collections/:name/hybrid", post(hybrid_search))
         .route("/v1/collections/:name/sparse", post(sparse_search))
@@ -64,10 +67,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/cluster/heartbeat", post(cluster_heartbeat))
         .route("/v1/snapshots", get(list_snapshots).post(create_snapshot))
-        .route("/v1/snapshots/:name", get(get_snapshot_meta).delete(delete_snapshot))
+        .route(
+            "/v1/snapshots/:name",
+            get(get_snapshot_meta).delete(delete_snapshot),
+        )
         .route("/v1/snapshots/:name/restore", post(restore_snapshot))
         .route("/v1/shards/:logical/replicas", post(add_replica))
-        .route("/v1/shards/:logical/replica-policy", put(set_replica_policy))
+        .route(
+            "/v1/shards/:logical/replica-policy",
+            put(set_replica_policy),
+        )
         .route(QUERY_PATH, post(shard_query))
         .route(REPLICATE_UPSERT_PATH, post(replicate_upsert))
         .route(REPLICATE_DELETE_PATH, post(replicate_delete))
@@ -857,11 +866,7 @@ async fn set_replica_policy(
     state
         .db
         .write()
-        .set_replica_policy(
-            &logical,
-            body.require_replica_ack,
-            body.replica_timeout_ms,
-        )
+        .set_replica_policy(&logical, body.require_replica_ack, body.replica_timeout_ms)
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     Ok(Json(json!({
         "logical": logical,

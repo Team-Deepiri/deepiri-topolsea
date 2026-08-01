@@ -159,11 +159,21 @@ impl ZColumnIndex {
         let base_pool = top_k
             .saturating_mul(self.config.hybrid_rerank_pool.max(1))
             .max(top_k);
+        // Heap capacity for hybrid rerank — NOT a beam-width floor (that made τ→1).
         let scale_pool = (self.vectors.len() / 20)
             .clamp(base_pool, 512)
             .max(ef.min(512));
         let coarse_pool = base_pool.max(scale_pool);
-        let ef = ef.max(coarse_pool).max(self.config.ef_search);
+        // Beam width follows caller ef (+ config floor). Do not inflate with coarse_pool.
+        let ef = ef.max(self.config.ef_search).max(1);
+        let touch_budget = self
+            .config
+            .touch_budget
+            .unwrap_or_else(|| {
+                let frac = self.config.touch_budget_frac.clamp(0.01, 1.0);
+                ((self.vectors.len() as f32) * frac).ceil() as usize
+            })
+            .max(top_k);
         let (qx, qy) = self.projection.project(query);
         let params = crate::search::SearchParams {
             coarse_pool,
@@ -172,10 +182,24 @@ impl ZColumnIndex {
             query_xy: (qx, qy),
             fallback_beam_radius: self.config.fallback_beam_radius,
             max_fallback_rings: self.config.max_fallback_rings,
+            max_fallback_columns: self.config.max_fallback_columns,
+            touch_budget,
+            use_centroid_graph: self.config.use_centroid_graph,
+            conditional_fallback: self.config.conditional_fallback,
+            fallback_score_gap: self.config.fallback_score_gap,
         };
         let mut stats = SearchStats::default();
         let mut predictor =
             LayerPredictor::with_state(self.predictor_state.read().unwrap().clone());
+        let graph = if self.config.use_centroid_graph {
+            Some(crate::centroid_graph::CentroidGraph::build(
+                &self.columns,
+                self.metric,
+                self.config.graph_degree,
+            ))
+        } else {
+            None
+        };
         let mut searcher = RevertBeamSearch::new(
             &self.grid,
             &self.columns,
@@ -185,6 +209,9 @@ impl ZColumnIndex {
             &mut stats,
             &mut predictor,
         );
+        if let Some(ref g) = graph {
+            searcher = searcher.with_graph(g);
+        }
         if let Some(pred) = eligible {
             searcher = searcher.with_eligible(pred);
         }
@@ -194,7 +221,11 @@ impl ZColumnIndex {
         *self.predictor_state.write().unwrap() = predictor.state().clone();
         let refined = self.hybrid_rerank(query, coarse, top_k);
         if self.config.hybrid_rerank_pool > 1 {
-            explain.strategy = "predictive_revert_hybrid_rerank".into();
+            if explain.strategy.starts_with("centroid") {
+                // keep graph strategy label
+            } else {
+                explain.strategy = "predictive_revert_hybrid_rerank".into();
+            }
         }
 
         self.revert_count
@@ -212,12 +243,13 @@ impl ZColumnIndex {
 
     pub fn rebalance(&mut self) {
         let vectors = self.vectors.clone();
-        self.compaction.collapse_and_promote(
+        self.compaction.collapse_and_promote_with_ratio(
             &mut self.grid,
             &mut self.columns,
             &vectors,
             self.dimension,
             self.config.max_layers,
+            self.config.max_column_height_ratio,
         );
     }
 
@@ -281,6 +313,24 @@ impl ZColumnIndex {
 
     pub fn columns(&self) -> &HashMap<String, ColumnStack> {
         &self.columns
+    }
+
+    /// Height balance stats (M4): (n_nonempty, mean_height, max_height, max/mean).
+    pub fn height_balance(&self) -> (usize, f32, u32, f32) {
+        let heights: Vec<u32> = self
+            .columns
+            .values()
+            .map(|c| c.height())
+            .filter(|h| *h > 0)
+            .collect();
+        if heights.is_empty() {
+            return (0, 0.0, 0, 0.0);
+        }
+        let n = heights.len();
+        let sum: u32 = heights.iter().sum();
+        let mean = sum as f32 / n as f32;
+        let max = *heights.iter().max().unwrap();
+        (n, mean, max, max as f32 / mean.max(1e-6))
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
