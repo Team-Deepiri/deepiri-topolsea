@@ -48,9 +48,14 @@ impl InvertedIndex {
     }
 
     /// Exact equality look-up.
+    ///
+    /// Returns `None` only when the field has never been indexed (caller may
+    /// post-filter). A known field with no matching value yields an empty bitmap
+    /// so `$or` / `$and` can compose without treating "no hits" as unevaluable.
     pub fn ids_eq(&self, field: &str, value: &Value) -> Option<RoaringBitmap> {
+        let map = self.fields.get(field)?;
         let key = value_key(value);
-        self.fields.get(field).and_then(|m| m.get(&key)).cloned()
+        Some(map.get(&key).cloned().unwrap_or_default())
     }
 
     /// Union of ids whose field value is in the given set.
