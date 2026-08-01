@@ -1,10 +1,14 @@
-# Phase A prep — become a real database
+# Phase A prep — become a real database (archived checklist)
 
-> **Status (2026-08-01):** Phase A–C and Track M are **implemented** in stacked PRs `#13`–`#16`. This file remains the original crate-level checklist. For current priorities see [`docs/NEXT_STEPS.md`](NEXT_STEPS.md) (merge → M5 re-measure → publish benches → **Phase D**).
+> **Status (2026-08-01):** Phase A–C and Track M are **implemented** in stacked PRs `#13`–`#16`.  
+> This file is an **archived crate-level checklist** kept for history.  
+> **Current priorities:** [`docs/NEXT_STEPS.md`](NEXT_STEPS.md) → merge stack → **M5** re-measure → publish benches → [`docs/PHASE_D.md`](PHASE_D.md).
 
 Prepared after applied-math measurement. Math track and DB track ran **in parallel**; public ANN-Benchmarks (B9) still wait on bounded-touch GO (**G1∧G2∧G3**).
 
-## Track M — Math / index (unblock honest benches)
+---
+
+## Archived — Track M checklist (all rows shipped in #16 except open M5 re-measure)
 
 | ID | Work | Crate | Acceptance | Code status |
 |---|---|---|---|---|
@@ -18,7 +22,9 @@ Prepared after applied-math measurement. Math track and DB track ran **in parall
 
 Phase-2 result: **oracle whole-column expand cannot hit G1∧G3** (needs ~8 columns at τ≈0.68). M3+M4 remain critical; M-graph alone is not enough. See [`math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md).
 
-## Track A — Phase A database must-haves
+---
+
+## Archived — Track A checklist (done in #13)
 
 ### A1. WAL + durable upsert / auto-flush — **done (#13)**
 - `dv-storage` WAL (`wal.log` Upsert/Delete/Meta) + CRC  
@@ -36,9 +42,11 @@ Phase-2 result: **oracle whole-column expand cannot hit G1∧G3** (needs ~8 colu
 ### A5. Finish filter DSL — **done (#13)**
 - `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in`; `docs/FILTER_DIALECT.md`  
 
-## Track B/C — **done (#14 / #15)**
+---
 
-Hybrid BM25, mmap segments, IVF/PQ, ann-bench harness; replication, shard harden, Prometheus, Helm, snapshots. See [`NEXT_STEPS.md`](NEXT_STEPS.md) Phase D for what remains toward peer-grade production.
+## Archived — Phases B/C (done in #14 / #15)
+
+Hybrid BM25, mmap segments, IVF/PQ, ann-bench harness; replication, shard harden, Prometheus, Helm, snapshots. See [`NEXT_STEPS.md`](NEXT_STEPS.md) and [`PHASE_D.md`](PHASE_D.md) for what remains toward peer-grade production.
 
 ## Non-goals (unchanged)
 

@@ -1,7 +1,7 @@
 # Experiment results — Z-Column applied-math campaign
 
 Updated: 2026-07-31 (v2 after structural search fixes).  
-**Follow-up (2026-08-01):** Track M engineering (prune, height-balance, centroid graph, budgets) is implemented in PR [#16](https://github.com/Team-Deepiri/deepiri-topolsea/pull/16). **M5 re-measure on that tip is still open** — do not treat this file’s “no G123” headline as obsolete until re-probe. Roadmap: [`../NEXT_STEPS.md`](../NEXT_STEPS.md).
+**Follow-up (2026-08-01):** Track M engineering (prune, height-balance, centroid graph, budgets) is implemented in PR [#16](https://github.com/Team-Deepiri/deepiri-topolsea/pull/16). **Headline: gates pending M5 re-measure** — do not treat the 2026-07-31 “no G123” grid as obsolete until re-probe on the Track M tip. Roadmap: [`../NEXT_STEPS.md`](../NEXT_STEPS.md).
 
 Harness: `cargo run -p dv-bench --release --bin topolsea-math-probe -- --json`  
 Raw JSON: `/tmp/topolsea-math-probe-full.json` (local run artifact).  
@@ -11,7 +11,7 @@ Math framing: [`Z_COLUMN_APPLIED_MATH.md`](Z_COLUMN_APPLIED_MATH.md).
 
 ## Why this campaign (propel the goal)
 
-Production goal needs **G1∧G2∧G3** (recall ≥0.98×HNSW, p50 ≤1.5×HNSW, touch τ&lt;0.5).  
+Production goal needs **G1∧G2∧G3** (recall ≥0.98×HNSW, p50 ≤1.5×HNSW, touch τ&lt;0.5; field `candidates_touched` in `GateInput`).  
 Prior runs looked like “recall OK, slow.” That was **misleading**: search was accidentally near-exhaustive. This round **removes the cheats**, measures the real fractal walk, and names the engineering that unlocks a path to all three gates.
 
 ---
@@ -35,7 +35,7 @@ These are exactly the applied-math failure mode: **observer/description artifact
 | G2 | `p50_Z / p50_HNSW ≤ 1.5` |
 | G3 | `candidates_touched / N &lt; 0.5` |
 
-**Result after fixes: no regime in the grid passed G1∧G2∧G3.**
+**Result after 2026-07-31 fixes (pre–Track M / pre–M5): no regime in the grid passed G1∧G2∧G3.** Re-measure after #16 before updating this verdict.
 
 ---
 

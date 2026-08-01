@@ -53,7 +53,21 @@ An outsider should be able to:
 8. **Prove it** — published recall/QPS/memory vs HNSW with explicit touch budgets  
 
 **First production cut (A–C):** staging-ready for an internal RAG app — largely **done in code**, pending merge + soak.  
-**Production-standard bar (Phase D+):** what peers expect for self-hosted Qdrant/Milvus-class ops and proof.
+**Production-standard bar (Phase D+):** what peers expect for self-hosted Qdrant/Milvus-class ops and proof — [`docs/PHASE_D.md`](PHASE_D.md).
+
+---
+
+## Go / no-go gates (G1∧G2∧G3)
+
+Canonical definitions (also used by `dv_bench::GateReport` / `GateInput.candidates_touched`):
+
+| Gate | Pass if |
+|---|---|
+| **G1** Recall | `recall_Z / recall_HNSW ≥ 0.98` @ k=10 |
+| **G2** Latency | `p50_Z / p50_HNSW ≤ 1.5` |
+| **G3** Touch | `candidates_touched / N < 0.5` |
+
+Protocol extras: [`docs/Z_COLUMN_PROTOCOL.md`](Z_COLUMN_PROTOCOL.md).
 
 ---
 
@@ -66,7 +80,7 @@ Not “more features before proof.” Order:
 1. Merge Phase A → B → C → Track M (`#13` → `#14` → `#15` → `#16`) into `main` (or a release branch).  
 2. Cut a staging image from that tip; run Docker Compose / Helm smoke (health, upsert, search, hybrid, snapshot, `/metrics`).
 
-### 2. Prove honesty (Track M5 — blocking for Z-Column marketing)
+### 2. Prove honesty (Track M milestone **M5** — blocking for Z-Column marketing)
 
 ```bash
 cargo run -p dv-bench --release --bin topolsea-math-probe -- --json
@@ -74,13 +88,7 @@ cargo run -p dv-bench --release --bin topolsea-math-localize -- --n=10000
 # then N=100000 if 10k looks close
 ```
 
-| Gate | Pass if |
-|---|---|
-| **G1** | `recall_Z / recall_HNSW ≥ 0.98` @ k=10 |
-| **G2** | `p50_Z / p50_HNSW ≤ 1.5` |
-| **G3** | `candidates_touched / N < 0.5` |
-
-Use `dv_bench::GateReport`. **If any gate fails:** keep HNSW as default; publish HNSW (and IVF) ANN-Benchmarks; Z-Column stays explain/shard story. **If all pass:** only then claim Z-Column as a production ANN option and publish equal-memory curves.
+Use `dv_bench::GateReport` against the [gates above](#go--no-go-gates-g1g2g3). **If any gate fails:** keep HNSW as default; publish HNSW (and IVF) ANN-Benchmarks; Z-Column stays explain/shard story. **If all pass:** only then claim Z-Column as a production ANN option and publish equal-memory curves.
 
 ### 3. Publish the proof story (B9 completion)
 
@@ -90,26 +98,7 @@ Use `dv_bench::GateReport`. **If any gate fails:** keep HNSW as default; publish
 
 ### 4. Phase D — production-standard hardening
 
-See below. This is the gap between “staging RAG DB” and “SRE would bet a tenant on it.”
-
----
-
-## Phase D — Production-standard bar (next build)
-
-Exit criteria: an SRE would keep a **paying multi-tenant** deployment alive without tribal knowledge.
-
-| ID | Item | Outcome |
-|---|---|---|
-| **D1** | **Soak + chaos** | 24h write/search soak; kill-9 mid-WAL; replica partition; restore drill from snapshot |
-| **D2** | **gRPC + SDK parity** | tonic search/upsert; Python/HTTP clients cover hybrid, filters, snapshots, namespaces |
-| **D3** | **Stronger replication** | Quorum / configurable sync ack SLAs; delete/upsert lag metrics; membership heartbeats drive routing |
-| **D4** | **Observability product** | OTLP export; RED/USE dashboards; alert examples (WAL lag, replica fail, p99) |
-| **D5** | **Security / tenancy** | Per-tenant quotas; audit log of admin ops; secret rotation docs; optional mTLS between shards |
-| **D6** | **Backup / compliance** | Encrypted snapshot export; retention policy; delete propagates to snapshots (document GDPR path) |
-| **D7** | **Scale path** | DiskANN or mmap-IVF cold path; documented memory envelope for 10M–100M vectors |
-| **D8** | **Coordinator HA** (optional) | Stateless query coordinators behind LB; or Raft for membership if multi-writer required |
-
-Milvus/Qdrant-level extras still deferred until D1–D4 are green: Woodpecker/Kafka WAL, GPU CAGRA, full multi-region.
+Full acceptance map: [`docs/PHASE_D.md`](PHASE_D.md). This is the gap between “staging RAG DB” and “SRE would bet a tenant on it.”
 
 ---
 
@@ -125,16 +114,6 @@ Keep these as the historical acceptance maps; implementation docs live on the st
 | **M** | Honest Z-Column path + gate harness | [#16](https://github.com/Team-Deepiri/deepiri-topolsea/pull/16) — prune, graph, budgets, conditional fallback |
 
 Prep checklist (historical): [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md).
-
-### Go/no-go gates (unchanged)
-
-| Gate | Pass if |
-|---|---|
-| **G1** Recall | `recall_Z / recall_HNSW ≥ 0.98` @ k=10 |
-| **G2** Latency | `p50_Z / p50_HNSW ≤ 1.5` |
-| **G3** Touch | `candidates_touched / N < 0.5` |
-
-Protocol extras: [`docs/Z_COLUMN_PROTOCOL.md`](Z_COLUMN_PROTOCOL.md).
 
 ---
 
@@ -182,8 +161,9 @@ Week 6+   D5–D8 as tenant demand requires
 |---|---|
 | [`docs/math/Z_COLUMN_APPLIED_MATH.md`](math/Z_COLUMN_APPLIED_MATH.md) | Discovery-mode math for shipping Z-Column |
 | [`docs/math/EXPERIMENT_PLAN.md`](math/EXPERIMENT_PLAN.md) | Measure matrix |
-| [`docs/math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md) | Latest go/no-go numbers |
-| [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md) | Original A + M crate checklist (historical) |
+| [`docs/math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md) | Latest go/no-go numbers (pre–M5 re-measure) |
+| [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md) | Original A + M crate checklist (archived / historical) |
+| [`docs/PHASE_D.md`](PHASE_D.md) | Production-standard hardening map |
 | [`docs/Z_COLUMN_PROTOCOL.md`](Z_COLUMN_PROTOCOL.md) | Index protocol + gates |
 | Phase A/B/C/M docs | On stacked PRs `#13`–`#16` until merged to `main` |
 | [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) | Older checklist (many items superseded) |
