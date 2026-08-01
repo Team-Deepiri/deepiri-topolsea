@@ -117,6 +117,7 @@ impl CompactionEngine {
             if let Some(vec) = vectors.get(&id) {
                 if let Some(src) = columns.get_mut(&src_key) {
                     src.remove_id(id);
+                    src.rebuild_centroid(vectors, dimension);
                 }
                 let dst_key = target_cell.to_string();
                 let tier = QuantTier::for_layer(target_cell.layer, max_layers);
@@ -158,6 +159,7 @@ impl CompactionEngine {
                 let tier = QuantTier::for_layer(target_cell.layer, max_layers);
                 if let Some(src) = columns.get_mut(&src_key) {
                     src.remove_id(id);
+                    src.rebuild_centroid(vectors, dimension);
                 }
                 let col = columns.entry(dst_key).or_insert_with(|| {
                     ColumnStack::new(ColumnPath::from_cell(target_cell), dimension, tier)
@@ -232,6 +234,12 @@ impl CompactionEngine {
                     col.push(id, vec);
                     self.events += 1;
                 }
+            }
+            if let Some(src) = columns.get_mut(&src_key) {
+                src.rebuild_centroid(vectors, dimension);
+            }
+            if let Some(dst) = columns.get_mut(&dst_key) {
+                dst.rebuild_centroid(vectors, dimension);
             }
         }
     }

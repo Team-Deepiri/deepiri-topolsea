@@ -1,3 +1,4 @@
+use crate::centroid_graph::CentroidGraph;
 use crate::column::ColumnStack;
 use crate::compact::CompactionEngine;
 use crate::explain::QueryExplain;
@@ -12,7 +13,7 @@ use dv_types::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 
 #[derive(Serialize, Deserialize)]
@@ -41,6 +42,11 @@ pub struct ZColumnIndex {
     /// Access hits queued off the exclusive search path (drained on persist/rebalance).
     #[serde(skip)]
     pending_access: Mutex<Vec<(Vec<VectorId>, u64)>>,
+    /// Cached centroid graph (M-graph); rebuilt when dirty.
+    #[serde(skip)]
+    centroid_graph: RwLock<Option<CentroidGraph>>,
+    #[serde(skip)]
+    graph_dirty: AtomicBool,
 }
 
 impl Clone for ZColumnIndex {
@@ -59,6 +65,8 @@ impl Clone for ZColumnIndex {
             columns_scanned: AtomicU64::new(self.columns_scanned.load(Ordering::Relaxed)),
             compaction: CompactionEngine::new(),
             pending_access: Mutex::new(Vec::new()),
+            centroid_graph: RwLock::new(None),
+            graph_dirty: AtomicBool::new(true),
         }
     }
 }
@@ -81,7 +89,32 @@ impl ZColumnIndex {
             columns_scanned: AtomicU64::new(0),
             compaction: CompactionEngine::new(),
             pending_access: Mutex::new(Vec::new()),
+            centroid_graph: RwLock::new(None),
+            graph_dirty: AtomicBool::new(true),
         }
+    }
+
+    fn mark_graph_dirty(&self) {
+        self.graph_dirty.store(true, Ordering::Relaxed);
+    }
+
+    fn graph_for_search(&self) -> Option<CentroidGraph> {
+        if !self.config.use_centroid_graph {
+            return None;
+        }
+        if !self.graph_dirty.load(Ordering::Relaxed) {
+            if let Ok(g) = self.centroid_graph.read() {
+                if let Some(ref cached) = *g {
+                    return Some(cached.clone());
+                }
+            }
+        }
+        let built = CentroidGraph::build(&self.columns, self.metric, self.config.graph_degree);
+        if let Ok(mut slot) = self.centroid_graph.write() {
+            *slot = Some(built.clone());
+            self.graph_dirty.store(false, Ordering::Relaxed);
+        }
+        Some(built)
     }
 
     pub fn projection(&self) -> &RoutingProjection {
@@ -185,21 +218,15 @@ impl ZColumnIndex {
             max_fallback_columns: self.config.max_fallback_columns,
             touch_budget,
             use_centroid_graph: self.config.use_centroid_graph,
+            graph_beam_hops: self.config.graph_beam_hops,
             conditional_fallback: self.config.conditional_fallback,
             fallback_score_gap: self.config.fallback_score_gap,
+            coarse_keep_per_column: self.config.coarse_keep_per_column,
         };
         let mut stats = SearchStats::default();
         let mut predictor =
             LayerPredictor::with_state(self.predictor_state.read().unwrap().clone());
-        let graph = if self.config.use_centroid_graph {
-            Some(crate::centroid_graph::CentroidGraph::build(
-                &self.columns,
-                self.metric,
-                self.config.graph_degree,
-            ))
-        } else {
-            None
-        };
+        let graph = self.graph_for_search();
         let mut searcher = RevertBeamSearch::new(
             &self.grid,
             &self.columns,
@@ -251,6 +278,7 @@ impl ZColumnIndex {
             self.config.max_layers,
             self.config.max_column_height_ratio,
         );
+        self.mark_graph_dirty();
     }
 
     /// Queue access ledger updates without requiring `&mut self` (rebalance stays on writer/persist).
@@ -300,6 +328,8 @@ impl ZColumnIndex {
         SearchStats {
             revert_count: self.revert_count.load(Ordering::Relaxed),
             columns_scanned: self.columns_scanned.load(Ordering::Relaxed),
+            coarse_scored: 0,
+            coarse_kept: 0,
         }
     }
 
@@ -345,6 +375,8 @@ impl ZColumnIndex {
         idx.compaction = CompactionEngine::new();
         idx.projection = RoutingProjection::new(idx.dimension, idx.config.projection_seed);
         idx.pending_access = Mutex::new(Vec::new());
+        idx.centroid_graph = RwLock::new(None);
+        idx.graph_dirty = AtomicBool::new(true);
         Ok(idx)
     }
 
@@ -405,6 +437,7 @@ impl VectorIndex for ZColumnIndex {
             .or_insert_with(|| ColumnStack::new(path, self.dimension, tier));
         col.push(id, &data);
         self.vectors.insert(id, data);
+        self.mark_graph_dirty();
         Ok(())
     }
 
@@ -413,9 +446,12 @@ impl VectorIndex for ZColumnIndex {
             return Err(TopolseaError::NotFound(id.to_string()));
         }
         for col in self.columns.values_mut() {
-            col.remove_id(id);
+            if col.remove_id(id) {
+                col.rebuild_centroid(&self.vectors, self.dimension);
+            }
         }
         self.columns.retain(|_, col| !col.is_empty());
+        self.mark_graph_dirty();
         Ok(())
     }
 

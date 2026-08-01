@@ -73,6 +73,14 @@ fn default_max_column_height_ratio() -> f32 {
     4.0
 }
 
+fn default_coarse_keep_per_column() -> usize {
+    32
+}
+
+fn default_graph_beam_hops() -> usize {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZColumnConfig {
     pub outer_grid: (u16, u16),
@@ -95,7 +103,7 @@ pub struct ZColumnConfig {
     /// Cap on extra columns scanned in ranked fallback (never full corpus).
     #[serde(default = "default_max_fallback_columns")]
     pub max_fallback_columns: usize,
-    /// Hard candidate touch budget as a fraction of N (M2). `None` disables.
+    /// Hard absolute touch budget. When `None`, uses `touch_budget_frac * N` (M2).
     #[serde(default)]
     pub touch_budget: Option<usize>,
     /// Default touch budget = frac * N when `touch_budget` is unset (M2).
@@ -107,6 +115,9 @@ pub struct ZColumnConfig {
     /// kNN degree for centroid graph.
     #[serde(default = "default_graph_degree")]
     pub graph_degree: usize,
+    /// Max BFS hop depth from seed centroids (M-graph).
+    #[serde(default = "default_graph_beam_hops")]
+    pub graph_beam_hops: usize,
     /// Only run ring/ranked fallback when heap < k or score gap (M1).
     #[serde(default = "default_true")]
     pub conditional_fallback: bool,
@@ -116,6 +127,10 @@ pub struct ZColumnConfig {
     /// Split columns taller than this × mean height (M4).
     #[serde(default = "default_max_column_height_ratio")]
     pub max_column_height_ratio: f32,
+    /// Keep at most this many coarse hits per column (M3 intra-column prune).
+    /// `0` = keep all (whole-column expand; high τ).
+    #[serde(default = "default_coarse_keep_per_column")]
+    pub coarse_keep_per_column: usize,
 }
 
 fn default_score_gap() -> f32 {
@@ -140,9 +155,11 @@ impl Default for ZColumnConfig {
             touch_budget_frac: 0.5,
             use_centroid_graph: true,
             graph_degree: 8,
+            graph_beam_hops: 3,
             conditional_fallback: true,
             fallback_score_gap: 2.0,
             max_column_height_ratio: 4.0,
+            coarse_keep_per_column: 32,
         }
     }
 }

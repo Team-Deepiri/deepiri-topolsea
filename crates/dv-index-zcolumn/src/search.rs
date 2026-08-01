@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub struct SearchStats {
     pub revert_count: u64,
     pub columns_scanned: u64,
+    pub coarse_scored: u64,
+    pub coarse_kept: u64,
 }
 
 /// Tunable search parameters (from `ZColumnConfig` + query planner).
@@ -30,9 +32,13 @@ pub struct SearchParams {
     pub touch_budget: usize,
     /// Prefer centroid-graph expansion (M-graph).
     pub use_centroid_graph: bool,
+    /// Max BFS hops from seed centroids.
+    pub graph_beam_hops: usize,
     /// Only fire fallback when needed (M1).
     pub conditional_fallback: bool,
     pub fallback_score_gap: f32,
+    /// Keep top-m coarse hits per column (0 = keep all).
+    pub coarse_keep_per_column: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +48,7 @@ struct FallbackCtx<'a> {
     beam_radius: u16,
     max_rings: u16,
     max_columns: usize,
+    coarse_keep: usize,
 }
 
 /// Beam search with callback-reverse backtracking on miss.
@@ -111,8 +118,10 @@ impl<'a> RevertBeamSearch<'a> {
             max_fallback_columns,
             touch_budget,
             use_centroid_graph,
+            graph_beam_hops,
             conditional_fallback,
             fallback_score_gap,
+            coarse_keep_per_column,
         } = params;
 
         let mut explain = QueryExplain::new("predictive_revert_beam");
@@ -142,7 +151,9 @@ impl<'a> RevertBeamSearch<'a> {
                         graph,
                         query,
                         beam_width,
+                        graph_beam_hops,
                         touch_budget,
+                        coarse_keep_per_column,
                         &mut visited,
                         &mut visited_cells,
                         &mut heap,
@@ -181,14 +192,19 @@ impl<'a> RevertBeamSearch<'a> {
                     visited_cells.insert(cell.key());
                     if let Some(col) = self.column_at(*cell) {
                         // M3: quantized coarse filter during beam; FP32 at hybrid rerank.
-                        found_any |= self.scan_column_budgeted(
+                        let (found, scored, kept) = self.scan_column_budgeted(
                             col,
                             query,
                             &mut visited,
                             &mut heap,
                             true,
                             touch_budget,
+                            coarse_keep_per_column,
+                            &mut explain,
                         );
+                        self.stats.coarse_scored += scored;
+                        self.stats.coarse_kept += kept;
+                        found_any |= found;
                     }
                 }
 
@@ -248,6 +264,7 @@ impl<'a> RevertBeamSearch<'a> {
                 beam_radius: fallback_beam_radius,
                 max_rings: max_fallback_rings,
                 max_columns: max_fallback_columns,
+                coarse_keep: coarse_keep_per_column,
             };
             if fallback_beam_radius > 0 && max_fallback_rings > 0 {
                 explain.used_fallback_scan = true;
@@ -277,6 +294,8 @@ impl<'a> RevertBeamSearch<'a> {
         explain.columns_scanned = self.stats.columns_scanned;
         explain.candidate_pool = visited.len();
         explain.touch_budget = touch_budget;
+        explain.coarse_scored = self.stats.coarse_scored;
+        explain.coarse_kept = self.stats.coarse_kept;
         explain.column_paths = visited_cells
             .iter()
             .map(|(l, x, y)| format!("{l}:{x}:{y}"))
@@ -294,9 +313,16 @@ impl<'a> RevertBeamSearch<'a> {
         touch_budget > 0 && visited.len() >= touch_budget
     }
 
-    fn needs_fallback(&self, heap: &TopKHeap, recall_k: usize, _gap: f32) -> bool {
-        // M1: fire only when the beam failed to fill top-k (score-gap reserved for future).
-        heap.len() < recall_k
+    fn needs_fallback(&self, heap: &TopKHeap, recall_k: usize, gap: f32) -> bool {
+        if heap.len() < recall_k {
+            return true;
+        }
+        match (heap.best_distance(), heap.farthest_distance()) {
+            (Some(best), Some(worst)) if best > 0.0 && gap.is_finite() && gap > 0.0 => {
+                worst / best > gap
+            }
+            _ => false,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -305,17 +331,22 @@ impl<'a> RevertBeamSearch<'a> {
         graph: &CentroidGraph,
         query: &[f32],
         beam_width: usize,
+        max_hops: usize,
         touch_budget: usize,
+        coarse_keep: usize,
         visited: &mut HashSet<VectorId>,
         visited_cells: &mut HashSet<(u8, u16, u16)>,
         heap: &mut TopKHeap,
         explain: &mut QueryExplain,
     ) {
         let seeds = graph.nearest_seeds(self.columns, self.metric, query, beam_width);
-        let mut frontier: VecDeque<String> = seeds.into_iter().map(|(k, _)| k).collect();
+        // (key, hops_from_seed)
+        let mut frontier: VecDeque<(String, usize)> =
+            seeds.into_iter().map(|(k, _)| (k, 0usize)).collect();
         let mut seen_keys: HashSet<String> = HashSet::new();
+        let hop_limit = max_hops.max(1);
 
-        while let Some(key) = frontier.pop_front() {
+        while let Some((key, hops)) = frontier.pop_front() {
             if self.budget_exhausted(touch_budget, visited) {
                 explain.hit_touch_budget = true;
                 break;
@@ -328,16 +359,26 @@ impl<'a> RevertBeamSearch<'a> {
                     visited_cells.insert(cell.key());
                 }
                 self.stats.columns_scanned += 1;
-                self.scan_column_budgeted(col, query, visited, heap, true, touch_budget);
+                let (_f, scored, kept) = self.scan_column_budgeted(
+                    col,
+                    query,
+                    visited,
+                    heap,
+                    true,
+                    touch_budget,
+                    coarse_keep,
+                    explain,
+                );
+                self.stats.coarse_scored += scored;
+                self.stats.coarse_kept += kept;
+            }
+            if hops >= hop_limit {
+                continue;
             }
             for (nbr, _) in graph.neighbors_of(&key) {
                 if !seen_keys.contains(nbr) {
-                    frontier.push_back(nbr.clone());
+                    frontier.push_back((nbr.clone(), hops + 1));
                 }
-            }
-            // Bound graph expansion to ~beam_width * degree hops worth of columns.
-            if seen_keys.len() >= beam_width.saturating_mul(4).max(beam_width) {
-                break;
             }
         }
     }
@@ -370,7 +411,18 @@ impl<'a> RevertBeamSearch<'a> {
                 }
                 self.stats.columns_scanned += 1;
                 if let Some(col) = self.column_at(cell) {
-                    self.scan_column_budgeted(col, ctx.query, visited, heap, true, touch_budget);
+                    let (_f, scored, kept) = self.scan_column_budgeted(
+                        col,
+                        ctx.query,
+                        visited,
+                        heap,
+                        true,
+                        touch_budget,
+                        ctx.coarse_keep,
+                        explain,
+                    );
+                    self.stats.coarse_scored += scored;
+                    self.stats.coarse_kept += kept;
                 }
             }
             ring += 1;
@@ -416,13 +468,26 @@ impl<'a> RevertBeamSearch<'a> {
             self.stats.columns_scanned += 1;
             scanned_extra += 1;
             if let Some(col) = self.column_at(cell) {
-                self.scan_column_budgeted(col, ctx.query, visited, heap, true, touch_budget);
+                let (_f, scored, kept) = self.scan_column_budgeted(
+                    col,
+                    ctx.query,
+                    visited,
+                    heap,
+                    true,
+                    touch_budget,
+                    ctx.coarse_keep,
+                    explain,
+                );
+                self.stats.coarse_scored += scored;
+                self.stats.coarse_kept += kept;
             }
         }
     }
 
     /// Batch-scan a column. Coarse path uses quantized SIMD only; FP32 rerank happens later.
-    /// Returns false early if `touch_budget` is hit mid-column (M2).
+    /// With `coarse_keep > 0`, only the top-m coarse hits enter the candidate pool (M3 prune).
+    /// Returns `(found_any, coarse_scored, coarse_kept)`.
+    #[allow(clippy::too_many_arguments)]
     fn scan_column_budgeted(
         &self,
         col: &ColumnStack,
@@ -431,7 +496,9 @@ impl<'a> RevertBeamSearch<'a> {
         heap: &mut TopKHeap,
         coarse_only: bool,
         touch_budget: usize,
-    ) -> bool {
+        coarse_keep: usize,
+        explain: &mut QueryExplain,
+    ) -> (bool, u64, u64) {
         let mut found = false;
         let quantized_dists = scan_column_distances(
             self.metric,
@@ -440,16 +507,16 @@ impl<'a> RevertBeamSearch<'a> {
             &col.quantized,
             self.dimension,
         );
+
+        // Build (dist, id) list for eligible unvisited members.
+        let mut scored: Vec<(f32, VectorId)> = Vec::with_capacity(col.ids.len());
         for (i, &id) in col.ids.iter().enumerate() {
-            if self.budget_exhausted(touch_budget, visited) {
-                break;
-            }
             if let Some(pred) = self.eligible {
                 if !pred(id) {
                     continue;
                 }
             }
-            if !visited.insert(id) {
+            if visited.contains(&id) {
                 continue;
             }
             let dist = if coarse_only {
@@ -465,10 +532,32 @@ impl<'a> RevertBeamSearch<'a> {
             } else {
                 continue;
             };
+            scored.push((dist, id));
+        }
+
+        let scored_n = scored.len() as u64;
+        explain.coarse_scored = explain.coarse_scored.saturating_add(scored_n);
+
+        if coarse_only && coarse_keep > 0 && scored.len() > coarse_keep {
+            scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(coarse_keep);
+        }
+
+        let mut kept = 0u64;
+        for (dist, id) in scored {
+            if self.budget_exhausted(touch_budget, visited) {
+                explain.hit_touch_budget = true;
+                break;
+            }
+            if !visited.insert(id) {
+                continue;
+            }
             heap.push(Candidate { id, distance: dist });
+            kept += 1;
+            explain.coarse_kept = explain.coarse_kept.saturating_add(1);
             found = true;
         }
-        found
+        (found, scored_n, kept)
     }
 
     fn column_at(&self, cell: CellCoord) -> Option<&ColumnStack> {

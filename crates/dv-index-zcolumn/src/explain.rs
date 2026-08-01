@@ -17,6 +17,12 @@ pub struct QueryExplain {
     /// True when search stopped because `candidate_pool` hit the budget.
     #[serde(default)]
     pub hit_touch_budget: bool,
+    /// Vectors scored with quantized distances before prune (M3).
+    #[serde(default)]
+    pub coarse_scored: u64,
+    /// Vectors kept after intra-column prune (M3).
+    #[serde(default)]
+    pub coarse_kept: u64,
 }
 
 impl QueryExplain {
