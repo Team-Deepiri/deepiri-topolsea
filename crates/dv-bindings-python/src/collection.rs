@@ -22,7 +22,8 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        Ok(col.read().len())
+        let n = col.read().len();
+        Ok(n)
     }
 
     #[pyo3(signature = (ids, vectors, metadatas=None))]
@@ -216,7 +217,8 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        match col.read().zcolumn_stats() {
+        let stats = col.read().zcolumn_stats();
+        match stats {
             Some(v) => json_to_python(py, &v),
             None => Ok(py.None()),
         }
