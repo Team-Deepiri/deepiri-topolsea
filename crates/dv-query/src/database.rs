@@ -256,7 +256,7 @@ impl Database {
         let mut merged = Vec::new();
 
         if !remote_targets.is_empty() {
-            let timeout = cluster.replica_timeout_ms.max(1_000).max(5_000);
+            let timeout = cluster.effective_query_timeout_ms().max(1);
             let remote = dv_shard_remote::fan_out_shard_queries(&remote_targets, timeout)
                 .map_err(|e| TopolseaError::InvalidConfig(e.to_string()))?;
             for partial in remote {
@@ -384,11 +384,15 @@ impl Database {
         logical_name: &str,
         require_replica_ack: bool,
         replica_timeout_ms: Option<u64>,
+        query_timeout_ms: Option<u64>,
     ) -> Result<()> {
         let mut cluster = self.storage.read_shard_cluster(logical_name)?;
         cluster.require_replica_ack = require_replica_ack;
         if let Some(ms) = replica_timeout_ms {
             cluster.replica_timeout_ms = ms;
+        }
+        if let Some(ms) = query_timeout_ms {
+            cluster.query_timeout_ms = ms;
         }
         self.storage.write_shard_cluster(logical_name, &cluster)
     }

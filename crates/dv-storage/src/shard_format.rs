@@ -62,13 +62,29 @@ pub struct ShardClusterConfig {
     /// Timeout for replica sync RPCs (ms).
     #[serde(default = "default_replica_timeout_ms")]
     pub replica_timeout_ms: u64,
+    /// Timeout for remote shard *query* fan-out (ms). Distinct from write replication.
+    #[serde(default = "default_query_timeout_ms")]
+    pub query_timeout_ms: u64,
 }
 
 fn default_replica_timeout_ms() -> u64 {
     10_000
 }
 
+fn default_query_timeout_ms() -> u64 {
+    30_000
+}
+
 impl ShardClusterConfig {
+    /// Effective query fan-out timeout (falls back to replica timeout if unset/legacy 0).
+    pub fn effective_query_timeout_ms(&self) -> u64 {
+        if self.query_timeout_ms > 0 {
+            self.query_timeout_ms
+        } else {
+            self.replica_timeout_ms.max(5_000)
+        }
+    }
+
     pub fn endpoints_for_shard(&self, shard_id: usize) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(p) = self.endpoints.get(&shard_id) {

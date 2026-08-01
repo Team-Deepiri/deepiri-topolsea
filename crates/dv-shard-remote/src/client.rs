@@ -8,6 +8,10 @@ use std::thread;
 use std::time::Duration;
 
 /// HTTP client for remote shard queries with retries + circuit breaker (C11).
+///
+/// Blocking by design (`ureq` + optional `thread::sleep` backoff). Call from Rayon
+/// workers or `spawn_blocking` — never directly on a Tokio worker thread. Making
+/// this `async` would require replacing ureq; until then, sleep is correct here.
 pub struct ShardQueryClient {
     timeout_ms: u64,
     max_retries: u32,
@@ -153,6 +157,7 @@ impl ShardQueryClient {
                         return Err(e);
                     }
                     attempt += 1;
+                    // Blocking backoff on the caller thread (Rayon / spawn_blocking).
                     let backoff = Duration::from_millis(25 * (1u64 << attempt.min(4)));
                     thread::sleep(backoff);
                 }

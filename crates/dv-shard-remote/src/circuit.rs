@@ -60,6 +60,7 @@ impl CircuitBreakerRegistry {
                 if let Some(at) = b.opened_at {
                     if at.elapsed() >= Duration::from_millis(self.open_ms) {
                         b.state = State::HalfOpen;
+                        tracing::info!(endpoint, "circuit half-open");
                         true
                     } else {
                         false
@@ -74,6 +75,9 @@ impl CircuitBreakerRegistry {
     pub fn on_success(&self, endpoint: &str) {
         let mut map = self.inner.lock().expect("circuit lock");
         let b = map.entry(endpoint.to_string()).or_default();
+        if b.state != State::Closed {
+            tracing::info!(endpoint, from = ?b.state, "circuit closed");
+        }
         b.failures = 0;
         b.state = State::Closed;
         b.opened_at = None;
@@ -84,6 +88,13 @@ impl CircuitBreakerRegistry {
         let b = map.entry(endpoint.to_string()).or_default();
         b.failures = b.failures.saturating_add(1);
         if b.failures >= self.failure_threshold || b.state == State::HalfOpen {
+            if b.state != State::Open {
+                tracing::warn!(
+                    endpoint,
+                    failures = b.failures,
+                    "circuit open"
+                );
+            }
             b.state = State::Open;
             b.opened_at = Some(Instant::now());
         }

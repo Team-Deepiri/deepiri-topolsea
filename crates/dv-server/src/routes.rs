@@ -223,12 +223,10 @@ fn default_index() -> String {
     "hnsw".into()
 }
 
-async fn create_collection(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<CreateCollectionBody>,
-) -> Result<impl IntoResponse, Response> {
-    let ns = require_auth(&headers, &state)?;
+fn build_collection_config(
+    ns: &str,
+    body: &CreateCollectionBody,
+) -> Result<CollectionConfig, Response> {
     let metric =
         DistanceMetric::from_str(&body.metric).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let index_kind = match body.index.to_lowercase().as_str() {
@@ -237,8 +235,8 @@ async fn create_collection(
         "ivf" | "ivfpq" | "pq" => IndexKind::Ivf,
         _ => IndexKind::Hnsw,
     };
-    let qualified = qname(&ns, &body.name);
-    let mut config = CollectionConfig::new(qualified.clone(), body.dimension, metric);
+    let qualified = qname(ns, &body.name);
+    let mut config = CollectionConfig::new(qualified, body.dimension, metric);
     config.index_kind = index_kind;
     if index_kind == IndexKind::Flat {
         config = config.with_flat_index();
@@ -267,6 +265,16 @@ async fn create_collection(
         }
         config.ivf = ivf;
     }
+    Ok(config)
+}
+
+async fn create_collection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateCollectionBody>,
+) -> Result<impl IntoResponse, Response> {
+    let ns = require_auth(&headers, &state)?;
+    let config = build_collection_config(&ns, &body)?;
     state
         .db
         .write()
@@ -853,6 +861,8 @@ struct ReplicaPolicyBody {
     require_replica_ack: bool,
     #[serde(default)]
     replica_timeout_ms: Option<u64>,
+    #[serde(default)]
+    query_timeout_ms: Option<u64>,
 }
 
 async fn set_replica_policy(
@@ -866,12 +876,18 @@ async fn set_replica_policy(
     state
         .db
         .write()
-        .set_replica_policy(&logical, body.require_replica_ack, body.replica_timeout_ms)
+        .set_replica_policy(
+            &logical,
+            body.require_replica_ack,
+            body.replica_timeout_ms,
+            body.query_timeout_ms,
+        )
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     Ok(Json(json!({
         "logical": logical,
         "require_replica_ack": body.require_replica_ack,
         "replica_timeout_ms": body.replica_timeout_ms,
+        "query_timeout_ms": body.query_timeout_ms,
     })))
 }
 
@@ -1010,30 +1026,21 @@ async fn delete_points(
     Ok(Json(json!({"deleted": deleted})))
 }
 
-/// Ensure path namespace matches the authorized namespace (tenant keys are sticky).
+/// Ensure path namespace matches the authorized namespace.
+///
+/// Tenant-scoped keys are sticky (path must equal the tenant ns). Global-key /
+/// open auth may use any path namespace.
 #[allow(clippy::result_large_err)]
 fn require_ns(headers: &HeaderMap, state: &AppState, path_ns: &str) -> Result<String, Response> {
     let auth_ns = require_auth(headers, state)?;
     let path_ns = dv_query::normalize_namespace(path_ns);
-    if auth_ns != path_ns && auth_ns != dv_query::DEFAULT_NAMESPACE {
-        // Tenant-scoped keys cannot escape their namespace.
-        if !state.tenant_keys.is_empty()
-            && state.tenant_keys.values().any(|v| v == &auth_ns)
-            && state.api_key.as_deref().is_none()
-        {
-            return Err(err(
-                StatusCode::FORBIDDEN,
-                format!("namespace mismatch: auth={auth_ns} path={path_ns}"),
-            ));
-        }
-        if state.tenant_keys.values().any(|v| v == &auth_ns) && auth_ns != path_ns {
-            return Err(err(
-                StatusCode::FORBIDDEN,
-                format!("namespace mismatch: auth={auth_ns} path={path_ns}"),
-            ));
-        }
+    let is_tenant = state.tenant_keys.values().any(|v| v == &auth_ns);
+    if is_tenant && auth_ns != path_ns {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            format!("namespace mismatch: auth={auth_ns} path={path_ns}"),
+        ));
     }
-    // Prefer explicit path namespace for global-key / open auth.
     Ok(path_ns)
 }
 
@@ -1058,35 +1065,10 @@ async fn create_collection_ns(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(ns): Path<String>,
-    Json(mut body): Json<CreateCollectionBody>,
+    Json(body): Json<CreateCollectionBody>,
 ) -> Result<impl IntoResponse, Response> {
     let ns = require_ns(&headers, &state, &ns)?;
-    // Force create into path namespace by rewriting header-style auth path.
-    let mut headers = headers.clone();
-    headers.insert(
-        "x-namespace",
-        HeaderValue::from_str(&ns).unwrap_or_else(|_| HeaderValue::from_static("default")),
-    );
-    // Reuse create by temporarily using path ns via qname in a local copy of create logic:
-    let metric =
-        DistanceMetric::from_str(&body.metric).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-    let index_kind = match body.index.to_lowercase().as_str() {
-        "flat" => IndexKind::Flat,
-        "zcolumn" => IndexKind::ZColumn,
-        "ivf" | "ivfpq" | "pq" => IndexKind::Ivf,
-        _ => IndexKind::Hnsw,
-    };
-    let qualified = qname(&ns, &body.name);
-    let mut config = CollectionConfig::new(qualified.clone(), body.dimension, metric);
-    config.index_kind = index_kind;
-    if index_kind == IndexKind::Flat {
-        config = config.with_flat_index();
-    } else if index_kind == IndexKind::ZColumn {
-        config = config.with_zcolumn_index();
-    } else if index_kind == IndexKind::Ivf {
-        config = config.with_ivf_index();
-    }
-    let _ = &mut body;
+    let config = build_collection_config(&ns, &body)?;
     state
         .db
         .write()
@@ -1094,7 +1076,9 @@ async fn create_collection_ns(
         .map_err(|e| err(StatusCode::CONFLICT, e))?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({"name": body.name, "namespace": ns, "dimension": body.dimension})),
+        Json(
+            json!({"name": body.name, "namespace": ns, "dimension": body.dimension, "index": body.index}),
+        ),
     ))
 }
 

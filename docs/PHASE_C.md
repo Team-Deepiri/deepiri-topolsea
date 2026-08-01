@@ -42,7 +42,13 @@ Replica nodes must host the physical collection and accept:
 
 ## Hardened shards (C11)
 
-Remote `ShardQueryRequest` includes optional `filter`. Fan-out uses retries (2) + circuit breaker + ordered failover endpoints. Timeout comes from `ShardClusterConfig.replica_timeout_ms` (min 5s for queries).
+Remote `ShardQueryRequest` includes optional `filter`. Fan-out uses retries (2) + circuit breaker + ordered failover endpoints. Write replication uses `replica_timeout_ms`; query fan-out uses `query_timeout_ms` (default 30s, independently tunable via replica-policy).
+
+```bash
+curl -X PUT localhost:6333/v1/shards/corp/replica-policy \
+  -H 'content-type: application/json' \
+  -d '{"require_replica_ack":true,"replica_timeout_ms":5000,"query_timeout_ms":30000}'
+```
 
 ## Metrics (C12)
 
