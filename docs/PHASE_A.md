@@ -9,7 +9,7 @@ Track M (Z-Column ANN gates) remains parallel and is **not** required for this c
 | ID | Delivered |
 |---|---|
 | A1 | Append-only `wal.log` with CRC; upsert/delete durable before ack; `persist()` snapshots + truncates WAL; crash recovery via replay; **background auto-flush** (`--flush-secs`, default 30s) |
-| A2 | `Collection::query` is `&self`; Z-Column access ledger queued off the exclusive path; `CollectionHandle = Arc<RwLock<Collection>>` for multi-reader + writer |
+| A2 | `Collection::query` is `&self`; Z-Column access ledger queued off the exclusive path; **Z-Column rebalance runs on `persist()` / auto-flush** (not per query — optional query-count rebalance remains a Track M knob); `CollectionHandle = Arc<RwLock<Collection>>` for multi-reader + writer |
 | A3 | `dv-server` / `topolsea-server` + `topolsea serve`: `/health`, collections CRUD, upsert, search, explain, persist; API key; **TLS** via `--tls-cert`/`--tls-key` (rustls); shard fan-out on axum (`/topolsea/v1/shard/query`); Python `HttpClient` |
 | A4 | Inverted index (roaring) + payload-constrained search; tiny eligible sets use exact scan; selectivity tests at 1% / 10% / 50% |
 | A5 | `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` wired — see [`FILTER_DIALECT.md`](FILTER_DIALECT.md) |

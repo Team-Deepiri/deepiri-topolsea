@@ -119,8 +119,12 @@ impl HnswIndex {
             for neighbor in neighbors {
                 if visited.insert(neighbor) {
                     let d = self.dist_query(query, neighbor);
-                    // Traverse through non-eligible nodes for connectivity; only
-                    // admit eligible ids into the result heap.
+                    // Filtered search: non-eligible neighbors are still queued as
+                    // bridge nodes so the walk can cross filtered-out regions and
+                    // reach eligible islands. Only eligible ids enter the `ef`
+                    // result heap. When the heap is full, eligible neighbors must
+                    // beat `worst`; non-eligible bridges are still explored
+                    // (`d < worst || !admit`) to preserve connectivity.
                     let admit = allow(neighbor);
                     if results.len() < ef {
                         candidates.push_back((neighbor, d));
@@ -138,8 +142,6 @@ impl HnswIndex {
                                     id: neighbor,
                                     distance: d,
                                 });
-                            } else if !admit {
-                                // keep exploring bridges even when heap is full
                             }
                         }
                     } else if admit {
