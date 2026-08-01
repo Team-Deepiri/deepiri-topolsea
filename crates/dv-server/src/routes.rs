@@ -1,17 +1,23 @@
-use crate::auth::check_api_key;
+use crate::auth::authorize;
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use dv_metadata::Filter;
-use dv_query::{FusionMethod, HybridOptions};
-use dv_shard_remote::{ShardQueryRequest, ShardQueryResponse, QUERY_PATH};
+use dv_query::{qualify_collection, strip_namespace, FusionMethod, HybridOptions};
+use dv_shard_remote::{
+    ReplicateUpsertRequest, ReplicateUpsertResponse, ShardQueryRequest, ShardQueryResponse,
+    QUERY_PATH, REPLICATE_UPSERT_PATH,
+};
+use dv_storage::{ClusterMembership, ClusterNode};
 use dv_types::{CollectionConfig, DistanceMetric, IndexKind, IvfConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -35,7 +41,17 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/collections/:name/persist", post(persist_collection))
         .route("/v1/collections/:name/compact", post(compact_collection))
         .route("/v1/persist", post(persist_all))
+        .route("/metrics", get(metrics_endpoint))
+        .route(
+            "/v1/cluster/membership",
+            get(get_membership).put(put_membership),
+        )
+        .route("/v1/snapshots", get(list_snapshots).post(create_snapshot))
+        .route("/v1/snapshots/:name/restore", post(restore_snapshot))
+        .route("/v1/snapshots/:name", delete(delete_snapshot))
+        .route("/v1/shards/:logical/replicas", post(add_replica))
         .route(QUERY_PATH, post(shard_query))
+        .route(REPLICATE_UPSERT_PATH, post(replicate_upsert))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -46,8 +62,12 @@ async fn health() -> impl IntoResponse {
 }
 
 #[allow(clippy::result_large_err)]
-fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
-    check_api_key(headers, state.api_key.as_deref())
+fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<String, Response> {
+    authorize(headers, state.api_key.as_deref(), &state.tenant_keys)
+}
+
+fn qname(ns: &str, name: &str) -> String {
+    qualify_collection(ns, name)
 }
 
 fn err(status: StatusCode, msg: impl ToString) -> Response {
@@ -58,12 +78,16 @@ async fn list_collections(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let db = state.db.read();
     let names = db
         .list_collections()
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(Json(json!({"collections": names})))
+    let names: Vec<_> = names
+        .into_iter()
+        .filter_map(|n| strip_namespace(&ns, &n).map(|s| s.to_string()))
+        .collect();
+    Ok(Json(json!({"collections": names, "namespace": ns})))
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,7 +128,7 @@ async fn create_collection(
     headers: HeaderMap,
     Json(body): Json<CreateCollectionBody>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let metric =
         DistanceMetric::from_str(&body.metric).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let index_kind = match body.index.to_lowercase().as_str() {
@@ -113,7 +137,8 @@ async fn create_collection(
         "ivf" | "ivfpq" | "pq" => IndexKind::Ivf,
         _ => IndexKind::Hnsw,
     };
-    let mut config = CollectionConfig::new(body.name.clone(), body.dimension, metric);
+    let qualified = qname(&ns, &body.name);
+    let mut config = CollectionConfig::new(qualified.clone(), body.dimension, metric);
     config.index_kind = index_kind;
     if index_kind == IndexKind::Flat {
         config = config.with_flat_index();
@@ -149,7 +174,9 @@ async fn create_collection(
         .map_err(|e| err(StatusCode::CONFLICT, e))?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({"name": body.name, "dimension": body.dimension, "index": body.index})),
+        Json(
+            json!({"name": body.name, "namespace": ns, "dimension": body.dimension, "index": body.index}),
+        ),
     ))
 }
 
@@ -158,10 +185,10 @@ async fn get_collection(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let col = col.read();
     Ok(Json(json!({
@@ -178,11 +205,11 @@ async fn delete_collection(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     state
         .db
         .write()
-        .delete_collection(&name)
+        .delete_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     Ok(Json(json!({"deleted": name})))
 }
@@ -204,13 +231,13 @@ async fn upsert(
     Path(name): Path<String>,
     Json(body): Json<UpsertBody>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     if body.ids.len() != body.vectors.len() {
         return Err(err(StatusCode::BAD_REQUEST, "ids/vectors length mismatch"));
     }
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let mut guard = col.write();
     let metas = body.metadatas.unwrap_or_default();
@@ -222,6 +249,10 @@ async fn upsert(
             .upsert_with_text(id, vec, meta, text)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     }
+    state
+        .metrics
+        .upsert_total
+        .fetch_add(body.ids.len() as u64, Ordering::Relaxed);
     Ok(Json(json!({"upserted": body.ids.len()})))
 }
 
@@ -260,7 +291,7 @@ async fn search(
     Path(name): Path<String>,
     Json(body): Json<SearchBody>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let filter = body
         .filter
         .as_ref()
@@ -269,7 +300,7 @@ async fn search(
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
     let results = col
@@ -285,6 +316,8 @@ async fn search(
             metadata: r.metadata,
         })
         .collect();
+    state.metrics.search_total.fetch_add(1, Ordering::Relaxed);
+    state.metrics.record_http("search", 200, Instant::now());
     Ok(Json(json!({"hits": hits})))
 }
 
@@ -314,7 +347,7 @@ async fn hybrid_search(
     Path(name): Path<String>,
     Json(body): Json<HybridBody>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let filter = body
         .filter
         .as_ref()
@@ -337,7 +370,7 @@ async fn hybrid_search(
     };
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let results = col
         .read()
@@ -373,7 +406,7 @@ async fn sparse_search(
     Path(name): Path<String>,
     Json(body): Json<SparseBody>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let filter = body
         .filter
         .as_ref()
@@ -382,7 +415,7 @@ async fn sparse_search(
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let results = col
         .read()
@@ -406,7 +439,7 @@ async fn explain(
     Path(name): Path<String>,
     Json(body): Json<SearchBody>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let filter = body
         .filter
         .as_ref()
@@ -415,7 +448,7 @@ async fn explain(
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let (results, explain) = col
         .read()
@@ -441,10 +474,10 @@ async fn persist_collection(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     col.write()
         .persist()
@@ -457,10 +490,10 @@ async fn compact_collection(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let ns = require_auth(&headers, &state)?;
     let mut db = state.db.write();
     let col = db
-        .get_collection(&name)
+        .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     col.write()
         .compact_segments()
@@ -476,7 +509,7 @@ async fn persist_all(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&headers, &state)?;
+    let _ns = require_auth(&headers, &state)?;
     state
         .db
         .write()
@@ -496,13 +529,23 @@ async fn shard_query(
             "shard query requires server --shard-collection",
         )
     })?;
+    let filter = req
+        .filter
+        .as_ref()
+        .map(Filter::from_json)
+        .transpose()
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    state
+        .metrics
+        .shard_fanout_total
+        .fetch_add(1, Ordering::Relaxed);
     let mut db = state.db.write();
     let col = db
         .get_collection(name)
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let results = col
         .read()
-        .query(&req.vector, req.top_k, None, req.ef)
+        .query(&req.vector, req.top_k, filter.as_ref(), req.ef)
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let hits = results
         .into_iter()
@@ -511,7 +554,172 @@ async fn shard_query(
             internal_id: r.internal_id.0,
             distance: r.distance,
             score: r.score,
+            metadata: r.metadata,
         })
         .collect();
     Ok(Json(ShardQueryResponse { hits }))
+}
+
+async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        state.metrics.render_prometheus(),
+    )
+}
+
+async fn get_membership(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    let _ns = require_auth(&headers, &state)?;
+    let m = state
+        .db
+        .read()
+        .membership()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(m))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MembershipBody {
+    nodes: Vec<ClusterNode>,
+}
+
+async fn put_membership(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<MembershipBody>,
+) -> Result<impl IntoResponse, Response> {
+    let _ns = require_auth(&headers, &state)?;
+    let mut membership = ClusterMembership {
+        nodes: body.nodes,
+        generation: 0,
+    };
+    {
+        let cur = state.db.read().membership().unwrap_or_default();
+        membership.generation = cur.generation.saturating_add(1);
+    }
+    state
+        .db
+        .write()
+        .set_membership(membership.clone())
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(membership))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SnapshotBody {
+    name: String,
+}
+
+async fn create_snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SnapshotBody>,
+) -> Result<impl IntoResponse, Response> {
+    let _ns = require_auth(&headers, &state)?;
+    let path = state
+        .db
+        .write()
+        .create_snapshot(&body.name)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    state.metrics.snapshot_total.fetch_add(1, Ordering::Relaxed);
+    Ok(Json(json!({"snapshot": body.name, "path": path})))
+}
+
+async fn list_snapshots(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    let _ns = require_auth(&headers, &state)?;
+    let names = state
+        .db
+        .read()
+        .list_snapshots()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({"snapshots": names})))
+}
+
+async fn restore_snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    let _ns = require_auth(&headers, &state)?;
+    state
+        .db
+        .write()
+        .restore_snapshot(&name)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({"restored": name})))
+}
+
+async fn delete_snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    let _ns = require_auth(&headers, &state)?;
+    state
+        .db
+        .write()
+        .delete_snapshot(&name)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({"deleted": name})))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReplicaBody {
+    shard_id: usize,
+    url: String,
+}
+
+async fn add_replica(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(logical): Path<String>,
+    Json(body): Json<ReplicaBody>,
+) -> Result<impl IntoResponse, Response> {
+    let ns = require_auth(&headers, &state)?;
+    let logical = qname(&ns, &logical);
+    state
+        .db
+        .write()
+        .add_shard_replica(&logical, body.shard_id, body.url.clone())
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(
+        json!({"logical": logical, "shard_id": body.shard_id, "replica": body.url}),
+    ))
+}
+
+async fn replicate_upsert(
+    State(state): State<AppState>,
+    Json(body): Json<ReplicateUpsertRequest>,
+) -> Result<impl IntoResponse, Response> {
+    if body.ids.len() != body.vectors.len() {
+        return Err(err(StatusCode::BAD_REQUEST, "ids/vectors length mismatch"));
+    }
+    let applied = body.ids.len();
+    let mut db = state.db.write();
+    let col = db
+        .get_collection(&body.collection)
+        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let mut guard = col.write();
+    let metas = body.metadatas.clone().unwrap_or_default();
+    let texts = body.texts.clone().unwrap_or_default();
+    for (i, (id, vec)) in body.ids.iter().zip(body.vectors.iter()).enumerate() {
+        let meta = metas.get(i).and_then(|m| m.clone());
+        let text = texts.get(i).and_then(|t| t.as_deref());
+        guard
+            .upsert_with_text(id, vec.clone(), meta, text)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    }
+    state
+        .metrics
+        .replicate_total
+        .fetch_add(1, Ordering::Relaxed);
+    Ok(Json(ReplicateUpsertResponse { applied }))
 }

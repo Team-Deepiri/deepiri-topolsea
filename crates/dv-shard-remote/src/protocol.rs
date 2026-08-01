@@ -1,12 +1,16 @@
 use dv_types::VectorId;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// POST /topolsea/v1/shard/query body.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ShardQueryRequest {
     pub vector: Vec<f32>,
     pub top_k: usize,
     pub ef: usize,
+    /// Optional payload filter (JSON dialect) — applied on the shard node (C11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Value>,
 }
 
 /// Single hit in a shard query response.
@@ -16,6 +20,8 @@ pub struct ShardQueryHit {
     pub internal_id: u64,
     pub distance: f32,
     pub score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 impl ShardQueryHit {
@@ -30,6 +36,23 @@ pub struct ShardQueryResponse {
     pub hits: Vec<ShardQueryHit>,
 }
 
+/// POST /topolsea/v1/replicate/upsert — primary → backup sync (C10).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicateUpsertRequest {
+    pub collection: String,
+    pub ids: Vec<String>,
+    pub vectors: Vec<Vec<f32>>,
+    #[serde(default)]
+    pub metadatas: Option<Vec<Option<Value>>>,
+    #[serde(default)]
+    pub texts: Option<Vec<Option<String>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicateUpsertResponse {
+    pub applied: usize,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ShardRemoteError {
     #[error("HTTP {status}: {body}")]
@@ -38,6 +61,9 @@ pub enum ShardRemoteError {
     Transport(String),
     #[error("serde: {0}")]
     Serde(String),
+    #[error("circuit open: {0}")]
+    CircuitOpen(String),
 }
 
 pub const QUERY_PATH: &str = "/topolsea/v1/shard/query";
+pub const REPLICATE_UPSERT_PATH: &str = "/topolsea/v1/replicate/upsert";

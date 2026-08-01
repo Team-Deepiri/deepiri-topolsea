@@ -212,6 +212,7 @@ fn http_shard_server_responds() {
                 vector: vec![1.0, 0.0, 0.0, 0.0],
                 top_k: 1,
                 ef: 0,
+                filter: None,
             },
         )
         .expect("shard HTTP query");

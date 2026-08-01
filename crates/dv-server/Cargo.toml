@@ -11,7 +11,9 @@ path = "src/main.rs"
 [dependencies]
 dv-query = { path = "../dv-query" }
 dv-metadata = { path = "../dv-metadata" }
+dv-observe = { path = "../dv-observe" }
 dv-shard-remote = { path = "../dv-shard-remote" }
+dv-storage = { path = "../dv-storage" }
 dv-types = { path = "../dv-types" }
 axum = { version = "0.7", features = ["json"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }

@@ -26,6 +26,10 @@ struct Args {
     #[arg(long, env = "TOPOLSEA_API_KEY")]
     api_key: Option<String>,
 
+    /// JSON map of tenant API key → namespace, e.g. '{"k1":"acme"}' (C13)
+    #[arg(long, env = "TOPOLSEA_TENANT_KEYS")]
+    tenant_keys: Option<String>,
+
     /// Background snapshot interval in seconds (0 disables auto-flush)
     #[arg(long, default_value = "30")]
     flush_secs: u64,
@@ -56,6 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = Database::open(&args.data_dir)?.into_shared();
     let mut state = AppState::new(db.clone(), args.api_key);
+    if let Some(raw) = args.tenant_keys {
+        let map: std::collections::HashMap<String, String> = serde_json::from_str(&raw)?;
+        state = state.with_tenant_keys(map);
+    }
     if let Some(name) = args.shard_collection {
         state = state.with_shard_collection(name);
     }

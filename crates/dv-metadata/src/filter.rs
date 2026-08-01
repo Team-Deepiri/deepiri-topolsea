@@ -97,6 +97,41 @@ impl Filter {
         ))
     }
 
+    /// Serialize back to the JSON filter dialect (for remote shard fan-out).
+    pub fn to_json(&self) -> Value {
+        match self {
+            Filter::Eq { field, value } => {
+                let mut map = serde_json::Map::new();
+                map.insert(field.clone(), value.clone());
+                Value::Object(map)
+            }
+            Filter::Cmp { field, op, value } => {
+                let op_key = match op {
+                    FilterOp::Eq => "$eq",
+                    FilterOp::Ne => "$ne",
+                    FilterOp::Gt => "$gt",
+                    FilterOp::Gte => "$gte",
+                    FilterOp::Lt => "$lt",
+                    FilterOp::Lte => "$lte",
+                    FilterOp::In => "$in",
+                };
+                let mut inner = serde_json::Map::new();
+                inner.insert(op_key.to_string(), value.clone());
+                let mut map = serde_json::Map::new();
+                map.insert(field.clone(), Value::Object(inner));
+                Value::Object(map)
+            }
+            Filter::And(parts) => Value::Object(serde_json::Map::from_iter([(
+                "$and".into(),
+                Value::Array(parts.iter().map(|p| p.to_json()).collect()),
+            )])),
+            Filter::Or(parts) => Value::Object(serde_json::Map::from_iter([(
+                "$or".into(),
+                Value::Array(parts.iter().map(|p| p.to_json()).collect()),
+            )])),
+        }
+    }
+
     pub fn matches(&self, metadata: &Value) -> bool {
         match self {
             Filter::Eq { field, value } => metadata.get(field).map(|v| v == value).unwrap_or(false),

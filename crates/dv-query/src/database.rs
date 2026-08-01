@@ -135,6 +135,7 @@ impl Database {
         let manifest = self.storage.read_shard_manifest(logical_name)?;
         let shard = FractalShardRouter::route_vector(&manifest, &vector);
         let physical = manifest.physical_name(shard);
+        let meta_for_repl = metadata.clone();
         let id = {
             let col = self.get_collection(&physical)?;
             let id = col.write().upsert(external_id, vector.clone(), metadata)?;
@@ -155,6 +156,24 @@ impl Database {
             self.storage.write_shard_routing(logical_name, &routing)?;
         }
 
+        // C10: sync-replicate to backup endpoints for this shard (best-effort).
+        let cluster = self.storage.read_shard_cluster(logical_name)?;
+        if let Some(replicas) = cluster.replicas.get(&shard) {
+            let client = dv_shard_remote::ShardQueryClient::new(10_000).with_retries(1);
+            let req = dv_shard_remote::ReplicateUpsertRequest {
+                collection: physical.clone(),
+                ids: vec![external_id.to_string()],
+                vectors: vec![vector],
+                metadatas: Some(vec![meta_for_repl]),
+                texts: None,
+            };
+            for ep in replicas {
+                if let Err(e) = client.replicate_upsert(ep, &req) {
+                    tracing::warn!("replica upsert to {ep} failed: {e}");
+                }
+            }
+        }
+
         Ok(id)
     }
 
@@ -172,19 +191,20 @@ impl Database {
 
         let target_shards = Self::resolve_target_shards(&manifest, &routing, query_vector);
 
-        let remote_targets: Vec<_> =
-            dv_shard_remote::endpoints_for_shards(&target_shards, &cluster.endpoints)
-                .into_iter()
-                .map(|(shard_id, endpoint)| dv_shard_remote::ShardFanoutRequest {
-                    shard_id,
-                    endpoint,
-                    request: dv_shard_remote::ShardQueryRequest {
-                        vector: query_vector.to_vec(),
-                        top_k,
-                        ef,
-                    },
-                })
-                .collect();
+        let filter_json = filter.map(|f| f.to_json());
+        let request = dv_shard_remote::ShardQueryRequest {
+            vector: query_vector.to_vec(),
+            top_k,
+            ef,
+            filter: filter_json,
+        };
+
+        let remote_targets = dv_shard_remote::fanout_targets_from_cluster(
+            &target_shards,
+            &cluster.endpoints,
+            &cluster.replicas,
+            &request,
+        );
 
         let mut merged = Vec::new();
 
@@ -198,7 +218,7 @@ impl Database {
                         internal_id: hit.vector_id(),
                         distance: hit.distance,
                         score: hit.score,
-                        metadata: None,
+                        metadata: hit.metadata,
                     });
                 }
             }
@@ -263,6 +283,58 @@ impl Database {
         let mut cluster = self.storage.read_shard_cluster(logical_name)?;
         cluster.endpoints.insert(shard_id, base_url.into());
         self.storage.write_shard_cluster(logical_name, &cluster)
+    }
+
+    /// Register a backup replica endpoint for a shard (C10).
+    pub fn add_shard_replica(
+        &mut self,
+        logical_name: &str,
+        shard_id: usize,
+        base_url: impl Into<String>,
+    ) -> Result<()> {
+        let manifest = self.storage.read_shard_manifest(logical_name)?;
+        if shard_id >= manifest.num_shards {
+            return Err(TopolseaError::InvalidConfig(format!(
+                "shard_id {shard_id} out of range (num_shards={})",
+                manifest.num_shards
+            )));
+        }
+        let mut cluster = self.storage.read_shard_cluster(logical_name)?;
+        cluster.add_replica(shard_id, base_url);
+        self.storage.write_shard_cluster(logical_name, &cluster)
+    }
+
+    pub fn set_membership(&mut self, membership: dv_storage::ClusterMembership) -> Result<()> {
+        self.storage.write_membership(&membership)
+    }
+
+    pub fn membership(&self) -> Result<dv_storage::ClusterMembership> {
+        self.storage.read_membership()
+    }
+
+    pub fn create_snapshot(&mut self, name: &str) -> Result<std::path::PathBuf> {
+        // Persist all collections first so snapshot is consistent.
+        self.persist_all()?;
+        self.storage.create_snapshot(name)
+    }
+
+    pub fn list_snapshots(&self) -> Result<Vec<String>> {
+        self.storage.list_snapshots()
+    }
+
+    pub fn restore_snapshot(&mut self, name: &str) -> Result<()> {
+        self.storage.restore_snapshot(name)?;
+        // Drop in-memory handles so reopen picks restored files.
+        self.collections.clear();
+        Ok(())
+    }
+
+    pub fn delete_snapshot(&mut self, name: &str) -> Result<()> {
+        self.storage.delete_snapshot(name)
+    }
+
+    pub fn storage_root(&self) -> &std::path::Path {
+        self.storage.root()
     }
 
     pub fn shard_cluster_config(&self, logical_name: &str) -> Result<ShardClusterConfig> {

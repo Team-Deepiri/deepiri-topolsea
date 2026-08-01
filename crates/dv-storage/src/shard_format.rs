@@ -51,7 +51,55 @@ pub struct ShardRoutingIndex {
 /// Remote shard node endpoints for cross-node fan-out (`shard_id` → base URL).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShardClusterConfig {
+    /// Primary endpoint per shard.
     pub endpoints: std::collections::HashMap<usize, String>,
+    /// Backup replica endpoints per shard (tried on primary failure) — C10.
+    #[serde(default)]
+    pub replicas: std::collections::HashMap<usize, Vec<String>>,
+}
+
+impl ShardClusterConfig {
+    pub fn endpoints_for_shard(&self, shard_id: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(p) = self.endpoints.get(&shard_id) {
+            out.push(p.clone());
+        }
+        if let Some(reps) = self.replicas.get(&shard_id) {
+            for r in reps {
+                if !out.iter().any(|x| x == r) {
+                    out.push(r.clone());
+                }
+            }
+        }
+        out
+    }
+
+    pub fn add_replica(&mut self, shard_id: usize, url: impl Into<String>) {
+        self.replicas.entry(shard_id).or_default().push(url.into());
+    }
+}
+
+/// Cluster membership registry (C10) — nodes that can host shard replicas.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClusterMembership {
+    pub nodes: Vec<ClusterNode>,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterNode {
+    pub id: String,
+    pub advertise_url: String,
+    #[serde(default)]
+    pub role: NodeRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    #[default]
+    Data,
+    Coordinator,
 }
 
 impl ShardRoutingIndex {

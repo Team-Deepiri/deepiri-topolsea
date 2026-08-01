@@ -15,7 +15,8 @@ pub use format::{FileHeader, MAGIC, VERSION};
 pub use segment::VectorSegment;
 pub use segment_store::{SealedSegmentMeta, SegmentManifest, SegmentStore};
 pub use shard_format::{
-    parse_physical_shard_name, ShardClusterConfig, ShardManifest, ShardRoutingIndex,
+    parse_physical_shard_name, ClusterMembership, ClusterNode, NodeRole, ShardClusterConfig,
+    ShardManifest, ShardRoutingIndex,
 };
 pub use store::StorageEngine;
 pub use wal::{wal_upsert_ids, Wal, WalRecord, WAL_MAGIC, WAL_VERSION};

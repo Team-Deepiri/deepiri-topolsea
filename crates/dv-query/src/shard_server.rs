@@ -182,6 +182,7 @@ fn execute_local_query(
             internal_id: r.internal_id.0,
             distance: r.distance,
             score: r.score,
+            metadata: r.metadata,
         })
         .collect();
     Ok(ShardQueryResponse { hits })
