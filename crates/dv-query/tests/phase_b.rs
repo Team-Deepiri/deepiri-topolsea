@@ -205,3 +205,70 @@ fn linear_fusion_and_sparse_endpoint_path() {
         .unwrap();
     assert_eq!(hits[0].id.as_deref(), Some("d2"));
 }
+
+#[test]
+fn hybrid_filter_and_prefetch_rrf_vs_linear() {
+    use dv_metadata::Filter;
+    use dv_query::{FusionMethod, HybridOptions};
+
+    let dir = tempdir().unwrap();
+    let mut db = Database::open(dir.path()).unwrap();
+    db.create_collection(CollectionConfig::new("hf", 4, DistanceMetric::L2).with_flat_index())
+        .unwrap();
+    let col = db.get_collection("hf").unwrap();
+    {
+        let mut g = col.write();
+        g.upsert_with_text(
+            "keep",
+            vec![1.0, 0.0, 0.0, 0.0],
+            Some(json!({"tag": "ok"})),
+            Some("quantum fractal"),
+        )
+        .unwrap();
+        g.upsert_with_text(
+            "drop",
+            vec![0.9, 0.1, 0.0, 0.0],
+            Some(json!({"tag": "spam"})),
+            Some("quantum fractal"),
+        )
+        .unwrap();
+        g.upsert_with_text(
+            "other",
+            vec![0.0, 1.0, 0.0, 0.0],
+            Some(json!({"tag": "ok"})),
+            Some("unrelated filler"),
+        )
+        .unwrap();
+    }
+
+    let filter = Filter::from_json(&json!({"tag": {"$ne": "spam"}})).unwrap();
+    let mut rrf = HybridOptions::new(2, 16);
+    rrf.prefetch = Some(8);
+    let hits = col
+        .read()
+        .query_hybrid_opts(
+            &[1.0, 0.0, 0.0, 0.0],
+            "quantum fractal",
+            Some(&filter),
+            &rrf,
+        )
+        .unwrap();
+    let ids: Vec<_> = hits.iter().filter_map(|h| h.id.clone()).collect();
+    assert!(!ids.contains(&"drop".to_string()), "filter should drop spam: {ids:?}");
+    assert!(ids.contains(&"keep".to_string()), "expected keep in {ids:?}");
+
+    let mut linear = HybridOptions::new(1, 16);
+    linear.fusion = FusionMethod::Linear;
+    linear.dense_weight = Some(0.0);
+    linear.prefetch = Some(4);
+    let hits = col
+        .read()
+        .query_hybrid_opts(
+            &[1.0, 0.0, 0.0, 0.0],
+            "quantum fractal",
+            Some(&filter),
+            &linear,
+        )
+        .unwrap();
+    assert_eq!(hits[0].id.as_deref(), Some("keep"));
+}
