@@ -135,10 +135,7 @@ impl MetadataStore {
                 value,
             } => {
                 let all = self.inverted.ids_field(field)?;
-                let eq = self
-                    .inverted
-                    .ids_eq(field, value)
-                    .unwrap_or_else(RoaringBitmap::new);
+                let eq = self.inverted.ids_eq(field, value).unwrap_or_default();
                 Some(all - eq)
             }
             Filter::And(items) => {

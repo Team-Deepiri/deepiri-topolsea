@@ -17,6 +17,8 @@ pub struct ShardServerConfig {
 }
 
 /// Lightweight HTTP server exposing shard query on a single physical collection.
+///
+/// Prefer `dv_server::BackgroundServer` with `shard_collection` (axum) for new code.
 pub struct ShardQueryServer {
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,

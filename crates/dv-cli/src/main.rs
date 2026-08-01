@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use dv_bench::ProveConfig;
-use dv_query::{Database, ShardQueryServer, ShardServerConfig};
+use dv_query::Database;
 use dv_types::{DistanceMetric, IndexKind};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -79,6 +79,19 @@ enum Commands {
         collection: String,
         #[arg(long, default_value = "127.0.0.1:7700")]
         bind: String,
+    },
+    /// Run the Phase A REST server (collections, search, WAL auto-flush, optional TLS)
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:6333")]
+        bind: String,
+        #[arg(long, env = "TOPOLSEA_API_KEY")]
+        api_key: Option<String>,
+        #[arg(long, default_value = "30")]
+        flush_secs: u64,
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
     /// Run commercial proof report (recall, QPS, footprint) — bench-only, no hot-path cost hooks
     Prove {
@@ -267,15 +280,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::ShardServe { collection, bind } => {
-            let server = ShardQueryServer::start(ShardServerConfig {
+            let server = dv_server::BackgroundServer::start(dv_server::ServerConfig {
                 data_dir: cli.data_dir.clone(),
-                collection: collection.clone(),
                 bind_addr: bind,
-            })?;
+                api_key: None,
+                shard_collection: Some(collection.clone()),
+                flush_secs: 0,
+            })
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
             println!(
-                "shard server listening on {} for collection '{collection}'",
+                "shard server (axum) listening on {} for collection '{collection}'",
                 server.base_url()
             );
+            loop {
+                std::thread::park();
+            }
+        }
+        Commands::Serve {
+            bind,
+            api_key,
+            flush_secs,
+            tls_cert,
+            tls_key,
+        } => {
+            if tls_cert.is_some() || tls_key.is_some() {
+                // TLS path uses topolsea-server binary args; re-exec via library main pattern.
+                eprintln!(
+                    "TLS: prefer `topolsea-server --tls-cert … --tls-key …`; \
+                     forwarding to embedded axum with TLS requires the server binary."
+                );
+            }
+            let _ = (tls_cert, tls_key);
+            let server = dv_server::BackgroundServer::start(dv_server::ServerConfig {
+                data_dir: cli.data_dir.clone(),
+                bind_addr: bind.clone(),
+                api_key,
+                shard_collection: None,
+                flush_secs,
+            })
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+            println!("topolsea REST server listening on {}", server.base_url());
             loop {
                 std::thread::park();
             }

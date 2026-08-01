@@ -28,4 +28,5 @@ tempfile = "3"
 dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
 dv-index-api = { path = "../dv-index-api" }
+dv-server = { path = "../dv-server" }
 rand = "0.8"

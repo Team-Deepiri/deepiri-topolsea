@@ -610,6 +610,14 @@ impl Collection {
         let eligible_bm = filter.and_then(|f| self.metadata.eligible_ids(f));
         let use_payload_ann = eligible_bm.is_some();
 
+        if let Some(ref bm) = eligible_bm {
+            if bm.len() as usize <= top_k.saturating_mul(8).max(64) {
+                let results = self.query_exact_eligible(query_vector, top_k, filter, bm)?;
+                explain.strategy = "payload_exact_eligible".into();
+                return Ok((results, explain));
+            }
+        }
+
         let fetch_k = if filter.is_some() && !use_payload_ann {
             top_k.saturating_mul(10).max(top_k)
         } else {

@@ -177,7 +177,7 @@ fn zcolumn_recall_within_hnsw_band_at_10k() {
 
 #[test]
 fn http_shard_server_responds() {
-    use dv_query::{ShardQueryServer, ShardServerConfig};
+    use dv_server::{BackgroundServer, ServerConfig};
     use dv_shard_remote::{ShardQueryClient, ShardQueryRequest};
     use dv_types::CollectionConfig;
 
@@ -195,13 +195,14 @@ fn http_shard_server_responds() {
     db.persist_all().unwrap();
     drop(db);
 
-    let server = ShardQueryServer::start(ShardServerConfig {
+    let server = BackgroundServer::start(ServerConfig {
         data_dir: dir.path().to_path_buf(),
-        collection: "fast".into(),
         bind_addr: "127.0.0.1:0".into(),
+        api_key: None,
+        shard_collection: Some("fast".into()),
+        flush_secs: 0,
     })
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    .expect("axum shard server");
 
     let client = ShardQueryClient::new(5_000);
     let resp = client
@@ -220,7 +221,7 @@ fn http_shard_server_responds() {
 
 #[test]
 fn distributed_shard_fanout_via_http() {
-    use dv_query::{ShardQueryServer, ShardServerConfig};
+    use dv_server::{BackgroundServer, ServerConfig};
 
     let dir = tempdir().unwrap();
     let mut db = Database::open(dir.path()).unwrap();
@@ -241,18 +242,22 @@ fn distributed_shard_fanout_via_http() {
     let s1 = manifest.physical_name(1);
     drop(db);
 
-    let server0 = ShardQueryServer::start(ShardServerConfig {
+    let server0 = BackgroundServer::start(ServerConfig {
         data_dir: dir.path().to_path_buf(),
-        collection: s0.clone(),
         bind_addr: "127.0.0.1:0".into(),
+        api_key: None,
+        shard_collection: Some(s0.clone()),
+        flush_secs: 0,
     })
-    .unwrap();
-    let server1 = ShardQueryServer::start(ShardServerConfig {
+    .expect("shard0");
+    let server1 = BackgroundServer::start(ServerConfig {
         data_dir: dir.path().to_path_buf(),
-        collection: s1.clone(),
         bind_addr: "127.0.0.1:0".into(),
+        api_key: None,
+        shard_collection: Some(s1.clone()),
+        flush_secs: 0,
     })
-    .unwrap();
+    .expect("shard1");
 
     let mut db = Database::open(dir.path()).unwrap();
     db.set_shard_endpoint("remote", 0, server0.base_url())

@@ -3,6 +3,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+#[allow(clippy::result_large_err)]
 pub fn check_api_key(headers: &HeaderMap, expected: Option<&str>) -> Result<(), Response> {
     let Some(expected) = expected else {
         return Ok(());

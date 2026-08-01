@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use dv_metadata::Filter;
+use dv_shard_remote::{ShardQueryRequest, ShardQueryResponse, QUERY_PATH};
 use dv_types::{CollectionConfig, DistanceMetric, IndexKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -28,6 +29,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/collections/:name/points", put(upsert))
         .route("/v1/collections/:name/search", post(search))
         .route("/v1/collections/:name/explain", post(explain))
+        .route("/v1/collections/:name/persist", post(persist_collection))
+        .route("/v1/persist", post(persist_all))
+        .route(QUERY_PATH, post(shard_query))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -37,6 +41,7 @@ async fn health() -> impl IntoResponse {
     Json(json!({"status": "ok"}))
 }
 
+#[allow(clippy::result_large_err)]
 fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
     check_api_key(headers, state.api_key.as_deref())
 }
@@ -265,4 +270,64 @@ async fn explain(
         "hits": hits,
         "explain": explain,
     })))
+}
+
+async fn persist_collection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&headers, &state)?;
+    let mut db = state.db.write();
+    let col = db
+        .get_collection(&name)
+        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    col.write()
+        .persist()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({"persisted": name})))
+}
+
+async fn persist_all(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&headers, &state)?;
+    state
+        .db
+        .write()
+        .persist_all()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({"persisted": "all"})))
+}
+
+/// Compatibility endpoint for fractal shard fan-out clients.
+async fn shard_query(
+    State(state): State<AppState>,
+    Json(req): Json<ShardQueryRequest>,
+) -> Result<impl IntoResponse, Response> {
+    let name = state.shard_collection.as_ref().ok_or_else(|| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "shard query requires server --shard-collection",
+        )
+    })?;
+    let mut db = state.db.write();
+    let col = db
+        .get_collection(name)
+        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let results = col
+        .read()
+        .query(&req.vector, req.top_k, None, req.ef)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let hits = results
+        .into_iter()
+        .map(|r| dv_shard_remote::ShardQueryHit {
+            id: r.id,
+            internal_id: r.internal_id.0,
+            distance: r.distance,
+            score: r.score,
+        })
+        .collect();
+    Ok(Json(ShardQueryResponse { hits }))
 }

@@ -177,27 +177,44 @@ fn concurrent_readers_with_writer() {
 
 #[test]
 fn payload_aware_filter_selectivity() {
-    let dir = tempdir().unwrap();
-    let mut db = Database::open(dir.path()).unwrap();
-    let col = db
-        .get_or_create_collection("sel", 4, DistanceMetric::L2)
-        .unwrap();
-    // 1% selectivity: only 1 of 100 has tag=rare
-    for i in 0..100 {
-        let tag = if i == 42 { "rare" } else { "common" };
-        col.write()
-            .upsert(
-                &format!("v{i}"),
-                vec![i as f32, 0.0, 0.0, 0.0],
-                Some(json!({"tag": tag})),
-            )
+    for (pct, tag_every) in [(1usize, 100usize), (10, 10), (50, 2)] {
+        let dir = tempdir().unwrap();
+        let mut db = Database::open(dir.path()).unwrap();
+        let col = db
+            .get_or_create_collection(&format!("sel{pct}"), 4, DistanceMetric::L2)
             .unwrap();
+        let n = 200usize;
+        for i in 0..n {
+            let tag = if i % tag_every == 0 { "keep" } else { "drop" };
+            col.write()
+                .upsert(
+                    &format!("v{i}"),
+                    vec![i as f32, 0.0, 0.0, 0.0],
+                    Some(json!({"tag": tag})),
+                )
+                .unwrap();
+        }
+        let filter = dv_metadata::Filter::from_json(&json!({"tag": "keep"})).unwrap();
+        let q = vec![0.0, 0.0, 0.0, 0.0];
+        let hits = col.read().query(&q, 20, Some(&filter), 64).unwrap();
+        assert!(!hits.is_empty(), "selectivity {pct}% returned no hits");
+        assert!(
+            hits.iter().all(|h| {
+                h.metadata
+                    .as_ref()
+                    .and_then(|m| m.get("tag"))
+                    .and_then(|v| v.as_str())
+                    == Some("keep")
+            }),
+            "selectivity {pct}% leaked non-matching tags"
+        );
+        // Recall vs filtered flat: every keep id nearer than drop for query at origin
+        // among keep set — at least the nearest keep vector should appear.
+        let expected_nearest = "v0";
+        assert!(
+            hits.iter()
+                .any(|h| h.id.as_deref() == Some(expected_nearest)),
+            "selectivity {pct}% missed nearest eligible {expected_nearest}"
+        );
     }
-    let filter = dv_metadata::Filter::from_json(&json!({"tag": "rare"})).unwrap();
-    let hits = col
-        .read()
-        .query(&[42.0, 0.0, 0.0, 0.0], 5, Some(&filter), 64)
-        .unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].id.as_deref(), Some("v42"));
 }
