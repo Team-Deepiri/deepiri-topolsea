@@ -110,10 +110,13 @@ class HttpCollection:
         ids: list[str],
         vectors: list[list[float]],
         metadatas: list[dict[str, Any] | None] | None = None,
+        texts: list[str | None] | None = None,
     ) -> None:
         body: dict[str, Any] = {"ids": ids, "vectors": vectors}
         if metadatas is not None:
             body["metadatas"] = metadatas
+        if texts is not None:
+            body["texts"] = texts
         self._client._request("PUT", f"/v1/collections/{self.name}/upsert", body)
 
     def query(
@@ -127,6 +130,36 @@ class HttpCollection:
         if filter is not None:
             body["filter"] = filter
         raw = self._client._request("POST", f"/v1/collections/{self.name}/search", body)
+        return [
+            QueryResult(
+                id=item.get("id"),
+                distance=float(item["distance"]),
+                score=float(item["score"]),
+                metadata=item.get("metadata"),
+            )
+            for item in raw["hits"]
+        ]
+
+    def query_hybrid(
+        self,
+        query_vector: list[float],
+        text: str,
+        top_k: int = 10,
+        filter: dict[str, Any] | None = None,
+        ef: int = 64,
+        rrf_k: float | None = None,
+    ) -> list[QueryResult]:
+        body: dict[str, Any] = {
+            "vector": query_vector,
+            "text": text,
+            "top_k": top_k,
+            "ef": ef,
+        }
+        if filter is not None:
+            body["filter"] = filter
+        if rrf_k is not None:
+            body["rrf_k"] = rrf_k
+        raw = self._client._request("POST", f"/v1/collections/{self.name}/hybrid", body)
         return [
             QueryResult(
                 id=item.get("id"),

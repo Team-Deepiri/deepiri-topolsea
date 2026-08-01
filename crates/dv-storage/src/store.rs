@@ -156,12 +156,67 @@ impl StorageEngine {
 
     pub fn read_vectors(&self, name: &str) -> Result<Vec<(VectorId, Vec<f32>)>> {
         let config = self.load_config(name)?;
+        // Prefer sealed segments when present (B7).
+        let seg_dir = self.segments_dir(name);
+        if seg_dir.join("manifest.json").exists() {
+            let store = crate::SegmentStore::open(seg_dir, config.dimension)?;
+            let sealed = store.read_all_mmap()?;
+            if !sealed.is_empty() {
+                return Ok(sealed);
+            }
+        }
         let path = self.collection_dir(name).join("vectors.bin");
         if !path.exists() {
             return Ok(Vec::new());
         }
         let seg = VectorSegment::new(path, config.dimension);
         seg.read_all()
+    }
+
+    pub fn segments_dir(&self, name: &str) -> PathBuf {
+        self.collection_dir(name).join("segments")
+    }
+
+    /// Incremental seal: write only vectors not already sealed; mark removals.
+    pub fn flush_vector_segments(&self, name: &str, current: &[(VectorId, &[f32])]) -> Result<()> {
+        let config = self.load_config(name)?;
+        let store = crate::SegmentStore::open(self.segments_dir(name), config.dimension)?;
+        let sealed_ids = store.sealed_ids()?;
+        let current_ids: std::collections::HashSet<u64> =
+            current.iter().map(|(id, _)| id.raw()).collect();
+
+        let new_records: Vec<(VectorId, &[f32])> = current
+            .iter()
+            .filter(|(id, _)| !sealed_ids.contains(&id.raw()))
+            .map(|(id, v)| (*id, *v))
+            .collect();
+        store.seal_segment(&new_records)?;
+
+        let deleted: Vec<VectorId> = sealed_ids
+            .difference(&current_ids)
+            .copied()
+            .map(VectorId)
+            .collect();
+        store.mark_deleted(&deleted)?;
+
+        // Drop legacy monolithic vectors.bin once sealed segments are authoritative.
+        let legacy = self.collection_dir(name).join("vectors.bin");
+        if store.manifest_path().exists() && legacy.exists() {
+            let _ = fs::remove_file(legacy);
+        }
+        Ok(())
+    }
+
+    pub fn write_sparse_blob(&self, name: &str, data: &[u8]) -> Result<()> {
+        atomic_write_bytes(self.collection_dir(name).join("sparse.bin"), data)
+    }
+
+    pub fn read_sparse_blob(&self, name: &str) -> Result<Vec<u8>> {
+        let path = self.collection_dir(name).join("sparse.bin");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(fs::read(path)?)
     }
 
     pub fn write_index_blob(&self, name: &str, data: &[u8]) -> Result<()> {

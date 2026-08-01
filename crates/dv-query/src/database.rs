@@ -95,6 +95,8 @@ impl Database {
             config = config.with_zcolumn_index();
         } else if index_kind == IndexKind::Flat {
             config = config.with_flat_index();
+        } else if index_kind == IndexKind::Ivf {
+            config = config.with_ivf_index();
         }
 
         let manifest = ShardManifest::new(name, num_shards, &config);
@@ -111,6 +113,8 @@ impl Database {
                 shard_config = shard_config.with_zcolumn_index();
             } else if index_kind == IndexKind::Flat {
                 shard_config = shard_config.with_flat_index();
+            } else if index_kind == IndexKind::Ivf {
+                shard_config = shard_config.with_ivf_index();
             }
             self.create_collection(shard_config)?;
         }
@@ -334,6 +338,8 @@ impl Database {
                     config = config.with_zcolumn_index();
                 } else if index_kind == IndexKind::Flat {
                     config = config.with_flat_index();
+                } else if index_kind == IndexKind::Ivf {
+                    config = config.with_ivf_index();
                 }
                 return self.create_collection(config);
             }

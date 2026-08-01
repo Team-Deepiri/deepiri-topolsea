@@ -1,8 +1,10 @@
 use dv_index_api::VectorIndex;
 use dv_index_flat::FlatIndex;
 use dv_index_hnsw::HnswIndex;
+use dv_index_ivf::IvfIndex;
 use dv_index_zcolumn::{ColumnStack, ZColumnIndex};
 use dv_metadata::{empty_metadata, Filter, InvertedIndex, MetadataStore};
+use dv_sparse::Bm25Index;
 use dv_storage::{ColumnCellRecord, StorageEngine, Wal, WalRecord, ZColumnManifest};
 use dv_types::{
     CollectionConfig, ExternalId, IndexKind, QuantTier, Result, TopolseaError, Vector, VectorId,
@@ -11,6 +13,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::hybrid::{reciprocal_rank_fusion, DEFAULT_RRF_K};
 use crate::planner::{IndexPlanner, QueryPlannerInput};
 use crate::query::{QueryExplainResult, QueryResult};
 
@@ -33,6 +36,7 @@ enum IndexBackend {
     Flat(Box<FlatIndex>),
     Hnsw(Box<HnswIndex>),
     ZColumn(Box<ZColumnIndex>),
+    Ivf(Box<IvfIndex>),
 }
 
 impl IndexBackend {
@@ -41,6 +45,7 @@ impl IndexBackend {
             IndexBackend::Flat(i) => i.as_mut(),
             IndexBackend::Hnsw(i) => i.as_mut(),
             IndexBackend::ZColumn(i) => i.as_mut(),
+            IndexBackend::Ivf(i) => i.as_mut(),
         }
     }
 
@@ -49,6 +54,7 @@ impl IndexBackend {
             IndexBackend::Flat(i) => i.as_ref(),
             IndexBackend::Hnsw(i) => i.as_ref(),
             IndexBackend::ZColumn(i) => i.as_ref(),
+            IndexBackend::Ivf(i) => i.as_ref(),
         }
     }
 
@@ -57,6 +63,7 @@ impl IndexBackend {
             IndexBackend::Flat(i) => i.to_bytes(),
             IndexBackend::Hnsw(i) => i.to_bytes(),
             IndexBackend::ZColumn(i) => i.to_bytes(),
+            IndexBackend::Ivf(i) => i.to_bytes(),
         }
     }
 
@@ -67,6 +74,7 @@ impl IndexBackend {
             IndexKind::ZColumn => Ok(IndexBackend::ZColumn(Box::new(ZColumnIndex::from_bytes(
                 bytes,
             )?))),
+            IndexKind::Ivf => Ok(IndexBackend::Ivf(Box::new(IvfIndex::from_bytes(bytes)?))),
         }
     }
 
@@ -75,6 +83,7 @@ impl IndexBackend {
             IndexBackend::Flat(f) => f.ids().collect(),
             IndexBackend::Hnsw(h) => h.ids().collect(),
             IndexBackend::ZColumn(z) => z.ids().collect(),
+            IndexBackend::Ivf(i) => i.ids().collect(),
         }
     }
 
@@ -105,6 +114,7 @@ impl IndexBackend {
                 let (hits, _) = z.search_with_explain_filtered(query, top_k, ef, eligible)?;
                 Ok(hits)
             }
+            IndexBackend::Ivf(i) => i.search_filtered(query, top_k, None, eligible),
         }
     }
 
@@ -240,6 +250,7 @@ pub struct Collection {
     storage: StorageEngine,
     index: IndexBackend,
     metadata: MetadataStore,
+    sparse: Bm25Index,
     external_to_internal: HashMap<String, VectorId>,
     internal_to_external: HashMap<VectorId, ExternalId>,
     wal: Mutex<Wal>,
@@ -264,6 +275,15 @@ impl Collection {
         let meta_map = storage.read_metadata_map(&name)?;
         let metadata = MetadataStore::load_from_persisted(meta_map);
 
+        let sparse = {
+            let bytes = storage.read_sparse_blob(&name)?;
+            if bytes.is_empty() {
+                Bm25Index::new()
+            } else {
+                Bm25Index::from_bytes(&bytes).unwrap_or_else(|_| Bm25Index::new())
+            }
+        };
+
         // next_id from manifest — will bump during WAL replay.
         let mut next_id = {
             // allocate_id path stores next_id in manifest; read via peek.
@@ -278,6 +298,7 @@ impl Collection {
             storage,
             index,
             metadata,
+            sparse,
             external_to_internal: HashMap::new(),
             internal_to_external: HashMap::new(),
             wal: Mutex::new(wal),
@@ -313,12 +334,13 @@ impl Collection {
                     internal_id,
                     vector,
                     metadata,
+                    text,
                 } => {
                     let id = VectorId(internal_id);
                     if id.raw() >= self.next_id {
                         self.next_id = id.raw() + 1;
                     }
-                    self.apply_upsert_memory(&external_id, id, vector, metadata)?;
+                    self.apply_upsert_memory(&external_id, id, vector, metadata, text.as_deref())?;
                 }
                 WalRecord::Delete {
                     external_id,
@@ -346,6 +368,11 @@ impl Collection {
                 config.dimension,
                 config.metric,
                 config.zcolumn.clone(),
+            ))),
+            IndexKind::Ivf => IndexBackend::Ivf(Box::new(IvfIndex::new(
+                config.dimension,
+                config.metric,
+                config.ivf.clone(),
             ))),
         }
     }
@@ -384,6 +411,7 @@ impl Collection {
         internal_id: VectorId,
         vector: Vec<f32>,
         metadata: Value,
+        text: Option<&str>,
     ) -> Result<()> {
         let v = Vector::new(vector);
         v.validate_dimension(self.config.dimension)?;
@@ -398,6 +426,9 @@ impl Collection {
         }
         self.index.as_mut().insert(internal_id, v)?;
         self.metadata.upsert(external_id, internal_id, metadata);
+        if let Some(doc) = text {
+            self.sparse.upsert(internal_id, doc);
+        }
         Ok(())
     }
 
@@ -408,6 +439,7 @@ impl Collection {
             let _ = self.index.as_mut().remove(id);
         }
         self.metadata.remove(external_id);
+        self.sparse.remove(id);
         Ok(())
     }
 
@@ -416,6 +448,17 @@ impl Collection {
         external_id: &str,
         vector: Vec<f32>,
         metadata: Option<Value>,
+    ) -> Result<VectorId> {
+        self.upsert_with_text(external_id, vector, metadata, None)
+    }
+
+    /// Upsert dense vector plus optional document text for BM25 / hybrid search.
+    pub fn upsert_with_text(
+        &mut self,
+        external_id: &str,
+        vector: Vec<f32>,
+        metadata: Option<Value>,
+        text: Option<&str>,
     ) -> Result<VectorId> {
         let v = Vector::new(vector.clone());
         v.validate_dimension(self.config.dimension)?;
@@ -434,6 +477,7 @@ impl Collection {
             internal_id: internal_id.raw(),
             vector: vector.clone(),
             metadata: meta.clone(),
+            text: text.map(|s| s.to_string()),
         };
         {
             let mut wal = self
@@ -443,7 +487,7 @@ impl Collection {
             wal.append(&record)?;
         }
 
-        self.apply_upsert_memory(external_id, internal_id, vector, meta)?;
+        self.apply_upsert_memory(external_id, internal_id, vector, meta, text)?;
         Ok(internal_id)
     }
 
@@ -585,6 +629,82 @@ impl Collection {
             .iter()
             .map(|q| self.query(q, top_k, filter, ef))
             .collect()
+    }
+
+    /// Hybrid dense + BM25 search fused with Reciprocal Rank Fusion.
+    pub fn query_hybrid(
+        &self,
+        query_vector: &[f32],
+        text_query: &str,
+        top_k: usize,
+        filter: Option<&Filter>,
+        ef: usize,
+        rrf_k: Option<f32>,
+    ) -> Result<Vec<QueryResult>> {
+        let fetch = top_k.saturating_mul(5).max(top_k);
+        let dense = self.query(query_vector, fetch, filter, ef)?;
+        let dense_list: Vec<(VectorId, f32)> =
+            dense.iter().map(|r| (r.internal_id, r.score)).collect();
+
+        let mut sparse_hits = self.sparse.search(text_query, fetch);
+        if let Some(f) = filter {
+            sparse_hits.retain(|(id, _)| {
+                let Some(ext) = self.internal_to_external.get(id) else {
+                    return false;
+                };
+                let meta = self.metadata.get(ext.as_str()).unwrap_or(&Value::Null);
+                f.matches(meta)
+            });
+        }
+
+        let fused = reciprocal_rank_fusion(
+            &[dense_list, sparse_hits],
+            top_k,
+            rrf_k.unwrap_or(DEFAULT_RRF_K),
+        );
+
+        let mut results = Vec::with_capacity(fused.len());
+        for (id, rrf_score) in fused {
+            let ext = self
+                .internal_to_external
+                .get(&id)
+                .map(|e| e.as_str().to_string());
+            let distance = self
+                .index
+                .as_ref()
+                .get_vector(id)
+                .ok()
+                .map(|v| dv_metrics::distance(self.config.metric, query_vector, &v.data))
+                .unwrap_or(0.0);
+            results.push(QueryResult {
+                id: ext.clone(),
+                internal_id: id,
+                distance,
+                score: rrf_score,
+                metadata: ext.and_then(|e| self.metadata.get(&e).cloned()),
+            });
+        }
+        Ok(results)
+    }
+
+    /// Sparse-only BM25 search (document text previously upserted).
+    pub fn query_sparse(&self, text_query: &str, top_k: usize) -> Result<Vec<QueryResult>> {
+        let hits = self.sparse.search(text_query, top_k);
+        let mut results = Vec::with_capacity(hits.len());
+        for (id, score) in hits {
+            let ext = self
+                .internal_to_external
+                .get(&id)
+                .map(|e| e.as_str().to_string());
+            results.push(QueryResult {
+                id: ext.clone(),
+                internal_id: id,
+                distance: 0.0,
+                score,
+                metadata: ext.and_then(|e| self.metadata.get(&e).cloned()),
+            });
+        }
+        Ok(results)
     }
 
     pub fn query_explain(
@@ -746,7 +866,11 @@ impl Collection {
             })
             .collect();
         let refs: Vec<_> = records.iter().map(|(id, v)| (*id, v.as_slice())).collect();
-        self.storage.write_vectors(self.name(), &refs)?;
+        // B7: incremental sealed segments (no full-corpus rewrite of prior segs).
+        self.storage.flush_vector_segments(self.name(), &refs)?;
+
+        let sparse_bytes = self.sparse.to_bytes()?;
+        self.storage.write_sparse_blob(self.name(), &sparse_bytes)?;
 
         // Advance snapshot watermark and truncate WAL.
         let wal_seq = {

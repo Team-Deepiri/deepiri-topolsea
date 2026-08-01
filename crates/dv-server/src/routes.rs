@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/collections/:name/upsert", put(upsert))
         .route("/v1/collections/:name/points", put(upsert))
         .route("/v1/collections/:name/search", post(search))
+        .route("/v1/collections/:name/hybrid", post(hybrid_search))
         .route("/v1/collections/:name/explain", post(explain))
         .route("/v1/collections/:name/persist", post(persist_collection))
         .route("/v1/persist", post(persist_all))
@@ -90,6 +91,7 @@ async fn create_collection(
     let index_kind = match body.index.to_lowercase().as_str() {
         "flat" => IndexKind::Flat,
         "zcolumn" => IndexKind::ZColumn,
+        "ivf" | "ivfpq" | "pq" => IndexKind::Ivf,
         _ => IndexKind::Hnsw,
     };
     let mut config = CollectionConfig::new(body.name.clone(), body.dimension, metric);
@@ -98,6 +100,8 @@ async fn create_collection(
         config = config.with_flat_index();
     } else if index_kind == IndexKind::ZColumn {
         config = config.with_zcolumn_index();
+    } else if index_kind == IndexKind::Ivf {
+        config = config.with_ivf_index();
     }
     state
         .db
@@ -150,6 +154,9 @@ struct UpsertBody {
     vectors: Vec<Vec<f32>>,
     #[serde(default)]
     metadatas: Option<Vec<Option<Value>>>,
+    /// Optional per-point document texts for BM25 / hybrid (B6).
+    #[serde(default)]
+    texts: Option<Vec<Option<String>>>,
 }
 
 async fn upsert(
@@ -168,10 +175,12 @@ async fn upsert(
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let mut guard = col.write();
     let metas = body.metadatas.unwrap_or_default();
+    let texts = body.texts.unwrap_or_default();
     for (i, (id, vec)) in body.ids.iter().zip(body.vectors).enumerate() {
         let meta = metas.get(i).and_then(|m| m.clone());
+        let text = texts.get(i).and_then(|t| t.as_deref());
         guard
-            .upsert(id, vec, meta)
+            .upsert_with_text(id, vec, meta, text)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     }
     Ok(Json(json!({"upserted": body.ids.len()})))
@@ -234,6 +243,60 @@ async fn search(
         })
         .collect();
     Ok(Json(json!({"hits": hits})))
+}
+
+#[derive(Debug, Deserialize)]
+struct HybridBody {
+    vector: Vec<f32>,
+    text: String,
+    #[serde(default = "default_top_k")]
+    top_k: usize,
+    #[serde(default)]
+    filter: Option<Value>,
+    #[serde(default = "default_ef")]
+    ef: usize,
+    #[serde(default)]
+    rrf_k: Option<f32>,
+}
+
+async fn hybrid_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(body): Json<HybridBody>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&headers, &state)?;
+    let filter = body
+        .filter
+        .as_ref()
+        .map(Filter::from_json)
+        .transpose()
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let mut db = state.db.write();
+    let col = db
+        .get_collection(&name)
+        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let results = col
+        .read()
+        .query_hybrid(
+            &body.vector,
+            &body.text,
+            body.top_k,
+            filter.as_ref(),
+            body.ef,
+            body.rrf_k,
+        )
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let hits: Vec<HitOut> = results
+        .into_iter()
+        .map(|r| HitOut {
+            id: r.id,
+            distance: r.distance,
+            score: r.score,
+            metadata: r.metadata,
+        })
+        .collect();
+    Ok(Json(json!({"hits": hits, "fusion": "rrf"})))
 }
 
 async fn explain(
