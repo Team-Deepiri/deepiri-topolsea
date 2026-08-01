@@ -1,4 +1,9 @@
-/// Lowercase alphanumeric tokenization (BM25-friendly, no stemming).
+/// Lowercase alphanumeric tokenization (BM25-friendly).
+///
+/// Intentionally minimal for Phase B: splits on non-alphanumeric, lowercases, no
+/// stop-word list, stemming, or language packs. Good enough for English RAG demos;
+/// richer tokenizers (stopwords / stemmers / ICU) are a follow-up when relevance
+/// evals show the simple splitter is the bottleneck.
 pub fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut cur = String::new();

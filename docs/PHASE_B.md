@@ -15,6 +15,9 @@ Stacked on Phase A. Track M (Z-Column ANN gates) remains parallel — **do not**
 
 ## Hybrid search
 
+BM25 uses a **basic alphanumeric tokenizer** (lowercase, no stopwords/stemming). That is
+intentional for Phase B; upgrade when relevance evals demand it.
+
 ```bash
 curl -s -X PUT localhost:6333/v1/collections/demo/upsert -H 'content-type: application/json' \
   -d '{"ids":["a"],"vectors":[[1,0,0,0]],"texts":["quantum fractal topology"]}'
@@ -39,9 +42,19 @@ On `persist()`:
 1. Seal **new** full-precision vectors into `segments/seg_NNNNNN.bin` (incremental).
 2. Soft-delete ids removed since last seal.
 3. For IVF+PQ `memory_bound`: drop raw vectors from RAM after seal; rewrite `index.bin`.
-4. Auto-compact when tombstones/segment count thresholds hit; or `POST /v1/collections/:name/compact`.
+4. Auto-compact when **deleted ids ≥ 1,000** or **segments ≥ 32** (tune in production if
+   delete/seal patterns differ); or `POST /v1/collections/:name/compact`.
 
 ## IVF / PQ
+
+Centroid / PQ training uses a **fixed-size random sample** (~256 points per list, capped at
+10k) so large in-memory corpora do not explode k-means cost. All vectors are still assigned
+to lists after training.
+
+`memory_bound=true` (with `pq_m`) drops full-precision vectors from RAM after segment seal and
+keeps PQ codes only. Search then uses asymmetric PQ distance / lossy decode for `get_vector`.
+Trade-off: **large RAM savings**, **lower recall** vs full-precision IVF — measure with
+`topolsea-ann-bench --compare` before publishing claims.
 
 ```bash
 curl -s -X POST localhost:6333/v1/collections -H 'content-type: application/json' \

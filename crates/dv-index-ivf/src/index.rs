@@ -103,6 +103,28 @@ impl IvfIndex {
         self.config.memory_bound && self.pq.is_some() && self.vectors.is_empty() && !self.is_empty()
     }
 
+    /// Cap training set size so large in-memory corpora do not explode k-means / PQ cost.
+    /// Target ~256 points per list, clamped to `[256, 10_000]`.
+    fn training_sample_cap(nlist: usize) -> usize {
+        nlist.saturating_mul(256).clamp(256, 10_000)
+    }
+
+    fn subsample_for_training(
+        vectors: &HashMap<VectorId, Vec<f32>>,
+        nlist: usize,
+        seed: u64,
+    ) -> Vec<Vec<f32>> {
+        let cap = Self::training_sample_cap(nlist);
+        let mut all: Vec<_> = vectors.values().cloned().collect();
+        if all.len() <= cap {
+            return all;
+        }
+        let mut rng = StdRng::seed_from_u64(seed.wrapping_add(0x51F1_ca11));
+        all.shuffle(&mut rng);
+        all.truncate(cap);
+        all
+    }
+
     fn train_from(&mut self, sample: &[Vec<f32>]) {
         let nlist = self.config.nlist.max(1);
         let mut rng = StdRng::seed_from_u64(self.config.seed);
@@ -332,8 +354,9 @@ impl VectorIndex for IvfIndex {
         }
         self.vectors.insert(id, vector.data.clone());
         if !self.trained && self.vectors.len() >= self.config.nlist.max(1) {
-            let all: Vec<_> = self.vectors.values().cloned().collect();
-            self.train_from(&all);
+            let sample =
+                Self::subsample_for_training(&self.vectors, self.config.nlist, self.config.seed);
+            self.train_from(&sample);
         } else {
             self.assign(id, &vector.data);
         }
