@@ -49,6 +49,9 @@ pub struct ZColumnIndex {
     graph_dirty: AtomicBool,
 }
 
+/// Clone copies columns/vectors but **resets** the cached centroid graph
+/// (`None` + `graph_dirty=true`). The graph rebuilds lazily on next graph search;
+/// this avoids sharing `RwLock` graph state across clones and matches persist/load.
 impl Clone for ZColumnIndex {
     fn clone(&self) -> Self {
         Self {

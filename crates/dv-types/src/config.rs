@@ -38,6 +38,7 @@ fn default_projection_seed() -> u64 {
 }
 
 fn default_hybrid_rerank_pool() -> usize {
+    // Track M: tighter default (was 5) for τ / hybrid latency.
     3
 }
 
@@ -146,6 +147,7 @@ impl Default for ZColumnConfig {
             rebalance_interval: 1000,
             ef_search: 128,
             projection_seed: 42,
+            // Track M default (was 5): tighter hybrid rerank pool for τ/latency.
             hybrid_rerank_pool: 3,
             decay_half_life_ms: 3_600_000,
             fallback_beam_radius: 2,

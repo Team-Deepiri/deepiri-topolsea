@@ -3,6 +3,7 @@
 //! Empirically maps dimensionless groups (τ, ρ_r, λ, β, φ) and finds Pareto
 //! regimes that could pass G1∧G2∧G3 — propelling Track M toward production.
 
+use dv_bench::normalize;
 use dv_index_api::VectorIndex;
 use dv_index_flat::FlatIndex;
 use dv_index_hnsw::HnswIndex;
@@ -42,16 +43,6 @@ fn gen_vectors(rng: &mut StdRng, n: usize, dim: usize, distro: Distro) -> Vec<Ve
                 .collect()
         }
     }
-}
-
-fn normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > f32::EPSILON {
-        for x in &mut v {
-            *x /= norm;
-        }
-    }
-    v
 }
 
 fn recall_mean(
