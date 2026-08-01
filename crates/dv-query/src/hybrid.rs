@@ -126,13 +126,19 @@ fn min_max_norm(list: &[(VectorId, f32)]) -> Vec<(VectorId, f32)> {
     if list.is_empty() {
         return Vec::new();
     }
+    if list.len() == 1 {
+        return vec![(list[0].0, 1.0)];
+    }
     let mut min_s = f32::MAX;
     let mut max_s = f32::MIN;
     for (_, s) in list {
         min_s = min_s.min(*s);
         max_s = max_s.max(*s);
     }
-    let span = (max_s - min_s).max(1e-9);
+    let span = max_s - min_s;
+    if span <= 1e-9 {
+        return list.iter().map(|(id, _)| (*id, 1.0)).collect();
+    }
     list.iter()
         .map(|(id, s)| (*id, (s - min_s) / span))
         .collect()
