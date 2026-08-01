@@ -1,6 +1,7 @@
-//! Thin HTTP client for a remote `topolsea-server` (Phase A3).
-//!
-//! Use alongside the embedded PyO3 / pure-Python client when the DB runs as a service.
+"""Thin HTTP client for a remote `topolsea-server` (Phase A3).
+
+Use alongside the embedded PyO3 / pure-Python client when the DB runs as a service.
+"""
 
 from __future__ import annotations
 

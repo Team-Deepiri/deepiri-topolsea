@@ -168,7 +168,7 @@ async fn upsert(
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let mut guard = col.write();
     let metas = body.metadatas.unwrap_or_default();
-    for (i, (id, vec)) in body.ids.iter().zip(body.vectors.into_iter()).enumerate() {
+    for (i, (id, vec)) in body.ids.iter().zip(body.vectors).enumerate() {
         let meta = metas.get(i).and_then(|m| m.clone());
         guard
             .upsert(id, vec, meta)
