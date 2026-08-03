@@ -1,0 +1,32 @@
+replicaCount: 1
+
+image:
+  repository: topolsea
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 6333
+
+apiKey: ""
+tenantKeys: ""
+flushSecs: 30
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  labels: {}
+
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClass: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 4Gi

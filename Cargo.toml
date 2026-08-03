@@ -11,6 +11,7 @@ members = [
     "crates/dv-sparse",
     "crates/dv-storage",
     "crates/dv-metadata",
+    "crates/dv-observe",
     "crates/dv-query",
     "crates/dv-shard-remote",
     "crates/dv-bench",

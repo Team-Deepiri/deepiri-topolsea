@@ -885,6 +885,19 @@ impl Collection {
         }))
     }
 
+    pub fn contains_external_id(&self, external_id: &str) -> bool {
+        self.external_to_internal.contains_key(external_id)
+    }
+
+    /// Number of WAL records not yet included in the last snapshot (C12 lag sample).
+    pub fn wal_pending(&self) -> Result<u64> {
+        let wal = self
+            .wal
+            .lock()
+            .map_err(|_| TopolseaError::Storage("WAL lock poisoned".into()))?;
+        Ok(wal.read_after(self.snapshot_seq)?.len() as u64)
+    }
+
     /// Snapshot to disk and truncate the WAL. Durability of upserts comes from the WAL;
     /// `persist` is the compaction / recovery checkpoint.
     pub fn persist(&mut self) -> Result<()> {

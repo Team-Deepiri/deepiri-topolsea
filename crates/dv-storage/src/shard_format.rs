@@ -51,7 +51,90 @@ pub struct ShardRoutingIndex {
 /// Remote shard node endpoints for cross-node fan-out (`shard_id` → base URL).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShardClusterConfig {
+    /// Primary endpoint per shard.
     pub endpoints: std::collections::HashMap<usize, String>,
+    /// Backup replica endpoints per shard (tried on primary failure) — C10.
+    #[serde(default)]
+    pub replicas: std::collections::HashMap<usize, Vec<String>>,
+    /// When true, sharded upsert fails if any replica ack fails (sync durability).
+    #[serde(default)]
+    pub require_replica_ack: bool,
+    /// Timeout for replica sync RPCs (ms).
+    #[serde(default = "default_replica_timeout_ms")]
+    pub replica_timeout_ms: u64,
+    /// Timeout for remote shard *query* fan-out (ms). Distinct from write replication.
+    #[serde(default = "default_query_timeout_ms")]
+    pub query_timeout_ms: u64,
+}
+
+fn default_replica_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_query_timeout_ms() -> u64 {
+    30_000
+}
+
+impl ShardClusterConfig {
+    /// Effective query fan-out timeout (falls back to replica timeout if unset/legacy 0).
+    pub fn effective_query_timeout_ms(&self) -> u64 {
+        if self.query_timeout_ms > 0 {
+            self.query_timeout_ms
+        } else {
+            self.replica_timeout_ms.max(5_000)
+        }
+    }
+
+    pub fn endpoints_for_shard(&self, shard_id: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(p) = self.endpoints.get(&shard_id) {
+            out.push(p.clone());
+        }
+        if let Some(reps) = self.replicas.get(&shard_id) {
+            for r in reps {
+                if !out.iter().any(|x| x == r) {
+                    out.push(r.clone());
+                }
+            }
+        }
+        out
+    }
+
+    pub fn add_replica(&mut self, shard_id: usize, url: impl Into<String>) {
+        self.replicas.entry(shard_id).or_default().push(url.into());
+    }
+}
+
+/// Cluster membership registry (C10) — nodes that can host shard replicas.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClusterMembership {
+    pub nodes: Vec<ClusterNode>,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterNode {
+    pub id: String,
+    pub advertise_url: String,
+    #[serde(default)]
+    pub role: NodeRole,
+    /// Last heartbeat unix millis (0 = never).
+    #[serde(default)]
+    pub last_heartbeat_ms: u64,
+    #[serde(default = "default_node_healthy")]
+    pub healthy: bool,
+}
+
+fn default_node_healthy() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    #[default]
+    Data,
+    Coordinator,
 }
 
 impl ShardRoutingIndex {
