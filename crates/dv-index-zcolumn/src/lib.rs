@@ -1,3 +1,4 @@
+mod centroid_graph;
 mod column;
 mod compact;
 mod explain;
@@ -9,6 +10,7 @@ mod projection;
 mod routing;
 mod search;
 
+pub use centroid_graph::CentroidGraph;
 pub use column::ColumnStack;
 pub use compact::CompactionEngine;
 pub use dv_metrics::{decode, encode, quantized_distance};

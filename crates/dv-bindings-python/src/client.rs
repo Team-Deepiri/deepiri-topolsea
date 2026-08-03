@@ -44,6 +44,7 @@ impl PyClient {
         let index_kind = match index.unwrap_or("hnsw").to_lowercase().as_str() {
             "flat" => IndexKind::Flat,
             "zcolumn" => IndexKind::ZColumn,
+            "ivf" | "ivfpq" => IndexKind::Ivf,
             _ => IndexKind::Hnsw,
         };
         let mut db = self.db.lock().unwrap();

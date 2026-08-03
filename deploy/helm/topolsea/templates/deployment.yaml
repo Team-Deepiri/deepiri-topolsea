@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "topolsea.fullname" . }}
+  labels:
+    app: topolsea
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: topolsea
+  template:
+    metadata:
+      labels:
+        app: topolsea
+    spec:
+      containers:
+        - name: topolsea
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --data-dir=/data
+            - --bind=0.0.0.0:6333
+            - --flush-secs={{ .Values.flushSecs }}
+          env:
+            - name: RUST_LOG
+              value: info
+            {{- if .Values.apiKey }}
+            - name: TOPOLSEA_API_KEY
+              value: {{ .Values.apiKey | quote }}
+            {{- end }}
+            {{- if .Values.tenantKeys }}
+            - name: TOPOLSEA_TENANT_KEYS
+              value: {{ .Values.tenantKeys | quote }}
+            {{- end }}
+          ports:
+            - containerPort: 6333
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 15
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "topolsea.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

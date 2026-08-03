@@ -22,15 +22,17 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        Ok(col.len())
+        let n = col.read().len();
+        Ok(n)
     }
 
-    #[pyo3(signature = (ids, vectors, metadatas=None))]
+    #[pyo3(signature = (ids, vectors, metadatas=None, texts=None))]
     fn upsert(
         &self,
         ids: Vec<String>,
         vectors: Vec<Vec<f32>>,
         metadatas: Option<Vec<Option<PyObject>>>,
+        texts: Option<Vec<Option<String>>>,
     ) -> PyResult<()> {
         if ids.len() != vectors.len() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -41,6 +43,12 @@ impl PyCollection {
         if !meta_vec.is_empty() && meta_vec.len() != ids.len() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "metadatas length mismatch",
+            ));
+        }
+        let text_vec = texts.unwrap_or_default();
+        if !text_vec.is_empty() && text_vec.len() != ids.len() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "texts length mismatch",
             ));
         }
 
@@ -59,9 +67,12 @@ impl PyCollection {
                         python_to_json(py, &bound).unwrap_or(Value::Null)
                     })
                 };
-                col.upsert(&id, vec, meta).map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
-                })?;
+                let text = text_vec.get(i).and_then(|t| t.as_deref());
+                col.write()
+                    .upsert_with_text(&id, vec, meta, text)
+                    .map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+                    })?;
             }
             Ok(())
         })
@@ -73,7 +84,8 @@ impl PyCollection {
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         for id in ids {
-            col.delete(&id)
+            col.write()
+                .delete(&id)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         }
         Ok(())
@@ -96,9 +108,89 @@ impl PyCollection {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         let results = col
+            .read()
             .query(&query_vector, top_k, filter_rust.as_ref(), ef)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
+        let list = PyList::empty_bound(py);
+        for r in results {
+            let dict = PyDict::new_bound(py);
+            dict.set_item("id", r.id)?;
+            dict.set_item("distance", r.distance)?;
+            dict.set_item("score", r.score)?;
+            if let Some(meta) = r.metadata {
+                dict.set_item("metadata", json_to_python(py, &meta)?)?;
+            }
+            list.append(dict)?;
+        }
+        Ok(list.into())
+    }
+
+    #[pyo3(signature = (query_vector, text_query, top_k=10, filter=None, ef=64, rrf_k=None, fusion=None, dense_weight=None, prefetch=None))]
+    fn query_hybrid(
+        &self,
+        py: Python<'_>,
+        query_vector: Vec<f32>,
+        text_query: &str,
+        top_k: usize,
+        filter: Option<&Bound<'_, PyAny>>,
+        ef: usize,
+        rrf_k: Option<f32>,
+        fusion: Option<&str>,
+        dense_weight: Option<f32>,
+        prefetch: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let filter_rust = filter.map(|f| python_filter_to_rust(f)).transpose()?;
+        let mut opts = dv_query::HybridOptions::new(top_k, ef);
+        opts.rrf_k = rrf_k;
+        opts.dense_weight = dense_weight;
+        opts.prefetch = prefetch;
+        opts.fusion = match fusion.unwrap_or("rrf").to_lowercase().as_str() {
+            "linear" | "weighted" => dv_query::FusionMethod::Linear,
+            _ => dv_query::FusionMethod::Rrf,
+        };
+
+        let mut db = self.db.lock().unwrap();
+        let col = db
+            .get_collection(&self.name)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+        let results = col
+            .read()
+            .query_hybrid_opts(&query_vector, text_query, filter_rust.as_ref(), &opts)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+        let list = PyList::empty_bound(py);
+        for r in results {
+            let dict = PyDict::new_bound(py);
+            dict.set_item("id", r.id)?;
+            dict.set_item("distance", r.distance)?;
+            dict.set_item("score", r.score)?;
+            if let Some(meta) = r.metadata {
+                dict.set_item("metadata", json_to_python(py, &meta)?)?;
+            }
+            list.append(dict)?;
+        }
+        Ok(list.into())
+    }
+
+    #[pyo3(signature = (text_query, top_k=10, filter=None))]
+    fn query_sparse(
+        &self,
+        py: Python<'_>,
+        text_query: &str,
+        top_k: usize,
+        filter: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let filter_rust = filter.map(|f| python_filter_to_rust(f)).transpose()?;
+        let mut db = self.db.lock().unwrap();
+        let col = db
+            .get_collection(&self.name)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        let results = col
+            .read()
+            .query_sparse(text_query, top_k, filter_rust.as_ref())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         let list = PyList::empty_bound(py);
         for r in results {
             let dict = PyDict::new_bound(py);
@@ -131,6 +223,7 @@ impl PyCollection {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         let batches = col
+            .read()
             .query_batch(&refs, top_k, filter_rust.as_ref(), ef)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
@@ -157,7 +250,8 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        col.persist()
+        col.write()
+            .persist()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         Ok(())
     }
@@ -178,6 +272,7 @@ impl PyCollection {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         let (results, explain) = col
+            .read()
             .query_explain(&query_vector, top_k, filter_rust.as_ref(), ef)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
@@ -211,7 +306,8 @@ impl PyCollection {
         let col = db
             .get_collection(&self.name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        match col.zcolumn_stats() {
+        let stats = col.read().zcolumn_stats();
+        match stats {
             Some(v) => json_to_python(py, &v),
             None => Ok(py.None()),
         }

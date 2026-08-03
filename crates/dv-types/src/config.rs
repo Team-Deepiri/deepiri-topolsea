@@ -8,6 +8,8 @@ pub enum IndexKind {
     Hnsw,
     Flat,
     ZColumn,
+    /// Inverted file + optional product quantization (memory-bound path).
+    Ivf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +38,7 @@ fn default_projection_seed() -> u64 {
 }
 
 fn default_hybrid_rerank_pool() -> usize {
+    // Track M: tighter default (was 5) for τ / hybrid latency.
     3
 }
 
@@ -53,6 +56,30 @@ fn default_max_fallback_rings() -> u16 {
 
 fn default_max_fallback_columns() -> usize {
     96
+}
+
+fn default_touch_budget_frac() -> f32 {
+    0.5
+}
+
+fn default_graph_degree() -> usize {
+    8
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_column_height_ratio() -> f32 {
+    4.0
+}
+
+fn default_coarse_keep_per_column() -> usize {
+    32
+}
+
+fn default_graph_beam_hops() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +104,38 @@ pub struct ZColumnConfig {
     /// Cap on extra columns scanned in ranked fallback (never full corpus).
     #[serde(default = "default_max_fallback_columns")]
     pub max_fallback_columns: usize,
+    /// Hard absolute touch budget. When `None`, uses `touch_budget_frac * N` (M2).
+    #[serde(default)]
+    pub touch_budget: Option<usize>,
+    /// Default touch budget = frac * N when `touch_budget` is unset (M2).
+    #[serde(default = "default_touch_budget_frac")]
+    pub touch_budget_frac: f32,
+    /// Walk neighbor graph over column centroids (M-graph).
+    #[serde(default = "default_true")]
+    pub use_centroid_graph: bool,
+    /// kNN degree for centroid graph.
+    #[serde(default = "default_graph_degree")]
+    pub graph_degree: usize,
+    /// Max BFS hop depth from seed centroids (M-graph).
+    #[serde(default = "default_graph_beam_hops")]
+    pub graph_beam_hops: usize,
+    /// Only run ring/ranked fallback when heap < k or score gap (M1).
+    #[serde(default = "default_true")]
+    pub conditional_fallback: bool,
+    /// Relative score gap that triggers conditional fallback (worst/best).
+    #[serde(default = "default_score_gap")]
+    pub fallback_score_gap: f32,
+    /// Split columns taller than this × mean height (M4).
+    #[serde(default = "default_max_column_height_ratio")]
+    pub max_column_height_ratio: f32,
+    /// Keep at most this many coarse hits per column (M3 intra-column prune).
+    /// `0` = keep all (whole-column expand; high τ).
+    #[serde(default = "default_coarse_keep_per_column")]
+    pub coarse_keep_per_column: usize,
+}
+
+fn default_score_gap() -> f32 {
+    2.0
 }
 
 impl Default for ZColumnConfig {
@@ -88,11 +147,21 @@ impl Default for ZColumnConfig {
             rebalance_interval: 1000,
             ef_search: 128,
             projection_seed: 42,
-            hybrid_rerank_pool: 5,
+            // Track M default (was 5): tighter hybrid rerank pool for τ/latency.
+            hybrid_rerank_pool: 3,
             decay_half_life_ms: 3_600_000,
             fallback_beam_radius: 2,
             max_fallback_rings: 8,
             max_fallback_columns: 96,
+            touch_budget: None,
+            touch_budget_frac: 0.5,
+            use_centroid_graph: true,
+            graph_degree: 8,
+            graph_beam_hops: 3,
+            conditional_fallback: true,
+            fallback_score_gap: 2.0,
+            max_column_height_ratio: 4.0,
+            coarse_keep_per_column: 32,
         }
     }
 }
@@ -111,6 +180,43 @@ mod tests {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IvfConfig {
+    /// Number of coarse centroids / inverted lists.
+    pub nlist: usize,
+    /// Lists probed at search time.
+    pub nprobe: usize,
+    /// Product-quantization subspaces (`None` = store full vectors in lists).
+    #[serde(default)]
+    pub pq_m: Option<usize>,
+    pub seed: u64,
+    /// Drop full-precision vectors from RAM after they are sealed to segments
+    /// (PQ memory-bound path). Search uses codes; `get_vector` reconstructs.
+    #[serde(default)]
+    pub memory_bound: bool,
+}
+
+impl Default for IvfConfig {
+    fn default() -> Self {
+        Self {
+            nlist: 64,
+            nprobe: 8,
+            pq_m: None,
+            seed: 42,
+            memory_bound: false,
+        }
+    }
+}
+
+impl IvfConfig {
+    /// Convenience: IVF + PQ with memory-bound raw drop enabled.
+    pub fn with_pq(mut self, pq_m: usize) -> Self {
+        self.pq_m = Some(pq_m);
+        self.memory_bound = true;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionConfig {
     pub name: String,
     pub dimension: usize,
@@ -119,6 +225,8 @@ pub struct CollectionConfig {
     pub hnsw: HnswConfig,
     #[serde(default)]
     pub zcolumn: ZColumnConfig,
+    #[serde(default)]
+    pub ivf: IvfConfig,
 }
 
 impl CollectionConfig {
@@ -130,6 +238,7 @@ impl CollectionConfig {
             index_kind: IndexKind::Hnsw,
             hnsw: HnswConfig::default(),
             zcolumn: ZColumnConfig::default(),
+            ivf: IvfConfig::default(),
         }
     }
 
@@ -140,6 +249,11 @@ impl CollectionConfig {
 
     pub fn with_zcolumn_index(mut self) -> Self {
         self.index_kind = IndexKind::ZColumn;
+        self
+    }
+
+    pub fn with_ivf_index(mut self) -> Self {
+        self.index_kind = IndexKind::Ivf;
         self
     }
 }

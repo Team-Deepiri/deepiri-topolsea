@@ -2,7 +2,15 @@
 
 from deepiri_topolsea.client import Client
 from deepiri_topolsea.collection import Collection
+from deepiri_topolsea.http_client import HttpClient, HttpCollection
 from deepiri_topolsea.types import QueryResult, SearchResult
 
-__all__ = ["Client", "Collection", "QueryResult", "SearchResult"]
+__all__ = [
+    "Client",
+    "Collection",
+    "HttpClient",
+    "HttpCollection",
+    "QueryResult",
+    "SearchResult",
+]
 __version__ = "0.1.0"

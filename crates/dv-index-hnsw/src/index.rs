@@ -65,18 +65,42 @@ impl HnswIndex {
         entry: VectorId,
         ef: usize,
         layer: i32,
+        eligible: Option<&dyn Fn(VectorId) -> bool>,
     ) -> Vec<(VectorId, f32)> {
         let mut visited = HashSet::new();
         let mut candidates = VecDeque::new();
         let mut results = TopKHeap::new(ef.max(1));
 
-        let entry_dist = self.dist_query(query, entry);
-        visited.insert(entry);
-        candidates.push_back((entry, entry_dist));
-        results.push(Candidate {
-            id: entry,
-            distance: entry_dist,
-        });
+        let allow = |id: VectorId| eligible.map(|f| f(id)).unwrap_or(true);
+
+        if !allow(entry) {
+            // Find any eligible neighbor seed from entry's layer.
+            let neighbors = self
+                .graphs
+                .get(&entry)
+                .and_then(|g| g.layers.get(layer as usize))
+                .cloned()
+                .unwrap_or_default();
+            let seed = neighbors.into_iter().find(|&n| allow(n));
+            let Some(seed) = seed else {
+                return Vec::new();
+            };
+            let entry_dist = self.dist_query(query, seed);
+            visited.insert(seed);
+            candidates.push_back((seed, entry_dist));
+            results.push(Candidate {
+                id: seed,
+                distance: entry_dist,
+            });
+        } else {
+            let entry_dist = self.dist_query(query, entry);
+            visited.insert(entry);
+            candidates.push_back((entry, entry_dist));
+            results.push(Candidate {
+                id: entry,
+                distance: entry_dist,
+            });
+        }
 
         while let Some((current, cur_dist)) = candidates.pop_front() {
             if let Some(worst) = results.farthest_distance() {
@@ -95,20 +119,39 @@ impl HnswIndex {
             for neighbor in neighbors {
                 if visited.insert(neighbor) {
                     let d = self.dist_query(query, neighbor);
+                    // Filtered search: non-eligible neighbors are still queued as
+                    // bridge nodes so the walk can cross filtered-out regions and
+                    // reach eligible islands. Only eligible ids enter the `ef`
+                    // result heap. When the heap is full, eligible neighbors must
+                    // beat `worst`; non-eligible bridges are still explored
+                    // (`d < worst || !admit`) to preserve connectivity.
+                    let admit = allow(neighbor);
                     if results.len() < ef {
                         candidates.push_back((neighbor, d));
-                        results.push(Candidate {
-                            id: neighbor,
-                            distance: d,
-                        });
-                    } else if let Some(worst) = results.farthest_distance() {
-                        if d < worst {
-                            candidates.push_back((neighbor, d));
+                        if admit {
                             results.push(Candidate {
                                 id: neighbor,
                                 distance: d,
                             });
                         }
+                    } else if let Some(worst) = results.farthest_distance() {
+                        if d < worst || !admit {
+                            candidates.push_back((neighbor, d));
+                            if admit && d < worst {
+                                results.push(Candidate {
+                                    id: neighbor,
+                                    distance: d,
+                                });
+                            }
+                        }
+                    } else if admit {
+                        candidates.push_back((neighbor, d));
+                        results.push(Candidate {
+                            id: neighbor,
+                            distance: d,
+                        });
+                    } else {
+                        candidates.push_back((neighbor, d));
                     }
                 }
             }
@@ -166,7 +209,7 @@ impl VectorIndex for HnswIndex {
         // Greedy search from top layer down to level+1
         let mut current = entry;
         for l in (level + 1..=self.max_layer as usize).rev() {
-            let found = self.search_layer(&self.vectors[&id], current, 1, l as i32);
+            let found = self.search_layer(&self.vectors[&id], current, 1, l as i32, None);
             if let Some((best, _)) = found.first() {
                 current = *best;
             }
@@ -176,7 +219,7 @@ impl VectorIndex for HnswIndex {
         let max_l = level.min(self.max_layer as usize);
         for l in (0..=max_l).rev() {
             let ef = self.config.ef_construction;
-            let mut candidates = self.search_layer(&self.vectors[&id], current, ef, l as i32);
+            let mut candidates = self.search_layer(&self.vectors[&id], current, ef, l as i32, None);
             let m = if l == 0 {
                 self.config.m_max0
             } else {
@@ -249,6 +292,22 @@ impl VectorIndex for HnswIndex {
     }
 
     fn search(&self, query: &[f32], top_k: usize, ef: usize) -> Result<Vec<SearchHit>> {
+        self.search_filtered(query, top_k, ef, None)
+    }
+
+    fn contains(&self, id: VectorId) -> bool {
+        self.vectors.contains_key(&id)
+    }
+}
+
+impl HnswIndex {
+    pub fn search_filtered(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        ef: usize,
+        eligible: Option<&dyn Fn(VectorId) -> bool>,
+    ) -> Result<Vec<SearchHit>> {
         if query.len() != self.dimension {
             return Err(TopolseaError::DimensionMismatch {
                 expected: self.dimension,
@@ -263,13 +322,13 @@ impl VectorIndex for HnswIndex {
         let mut current = self.entry_point.unwrap();
 
         for l in (1..=self.max_layer).rev() {
-            let found = self.search_layer(query, current, 1, l);
+            let found = self.search_layer(query, current, 1, l, eligible);
             if let Some((best, _)) = found.first() {
                 current = *best;
             }
         }
 
-        let mut candidates = self.search_layer(query, current, ef, 0);
+        let mut candidates = self.search_layer(query, current, ef, 0, eligible);
         candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         candidates.truncate(top_k);
 
@@ -277,9 +336,5 @@ impl VectorIndex for HnswIndex {
             .into_iter()
             .map(|(id, dist)| SearchHit::new(id, dist))
             .collect())
-    }
-
-    fn contains(&self, id: VectorId) -> bool {
-        self.vectors.contains_key(&id)
     }
 }

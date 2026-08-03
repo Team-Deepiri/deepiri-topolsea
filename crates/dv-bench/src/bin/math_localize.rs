@@ -1,9 +1,11 @@
 //! Phase-2 applied-math probe: localize GT neighbors in fractal address space,
+#![allow(clippy::field_reassign_with_default, clippy::too_many_arguments)]
 //! compare centroid-kNN column expand vs an oracle column order, and test whether
 //! any B can hit G1∧G2∧G3 (M-graph hypothesis).
 //!
 //!   cargo run -p dv-bench --release --bin topolsea-math-localize -- --n=10000
 
+use dv_bench::{GateInput, GateReport, GateThresholds};
 use dv_index_api::VectorIndex;
 use dv_index_flat::FlatIndex;
 use dv_index_hnsw::HnswIndex;
@@ -16,14 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::time::Instant;
 
-fn normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if n > f32::EPSILON {
-        for x in &mut v {
-            *x /= n;
-        }
-    }
-    v
+fn normalize(v: Vec<f32>) -> Vec<f32> {
+    dv_bench::normalize(v)
 }
 
 fn unit_sphere(rng: &mut StdRng, n: usize, dim: usize) -> Vec<Vec<f32>> {
@@ -32,7 +28,13 @@ fn unit_sphere(rng: &mut StdRng, n: usize, dim: usize) -> Vec<Vec<f32>> {
         .collect()
 }
 
-fn clusters(rng: &mut StdRng, n: usize, dim: usize, n_clusters: usize, sigma: f32) -> Vec<Vec<f32>> {
+fn clusters(
+    rng: &mut StdRng,
+    n: usize,
+    dim: usize,
+    n_clusters: usize,
+    sigma: f32,
+) -> Vec<Vec<f32>> {
     let centers: Vec<_> = (0..n_clusters)
         .map(|_| normalize((0..dim).map(|_| rng.gen_range(-1.0f32..1.0)).collect()))
         .collect();
@@ -165,16 +167,33 @@ fn oracle_gt_columns(
     )
 }
 
-fn g123(recall: f32, latx: f64, touch: f64) -> (bool, bool, bool) {
-    (recall >= 0.98, latx <= 1.5, touch < 0.5)
-}
-
 fn flag(b: bool) -> char {
     if b {
         'Y'
     } else {
         'n'
     }
+}
+
+fn eval_gates(
+    recall_z: f32,
+    recall_hnsw: f32,
+    p50_z_ms: f64,
+    p50_hnsw_ms: f64,
+    touch_mean: f64,
+    corpus_n: usize,
+) -> GateReport {
+    GateReport::evaluate(
+        &GateInput {
+            recall_z,
+            recall_hnsw,
+            p50_z_ms: p50_z_ms as f32,
+            p50_hnsw_ms: p50_hnsw_ms as f32,
+            candidates_touched: touch_mean as f32,
+            corpus_n: corpus_n as f32,
+        },
+        &GateThresholds::default(),
+    )
 }
 
 fn main() {
@@ -382,25 +401,25 @@ fn main() {
                 rec += recall_fraction(&got, t, k);
             }
             rec /= nq as f32;
-            let touch_f = (touch / nq as f64) / n as f64;
+            let touch_mean = touch / nq as f64;
+            let touch_f = touch_mean / n as f64;
             lats.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let p50 = lats[lats.len() / 2];
             let vs = rec / hnsw_rec.max(1e-6);
-            let latx = p50 / hnsw_p50.max(1e-9);
-            let (g1, g2, g3) = g123(rec, latx, touch_f);
+            let report = eval_gates(rec, hnsw_rec, p50, hnsw_p50, touch_mean, n);
             println!(
                 "{:>10} {:>7.4} {:>7.4} {:>8.3} {:>7.2} {:>7.3} {:>6.0} {:>5} {}{}{}",
                 label,
                 rec,
                 vs,
                 p50,
-                latx,
+                report.latency_ratio,
                 touch_f,
-                touch / nq as f64,
+                touch_mean,
                 "-",
-                flag(g1),
-                flag(g2),
-                flag(g3),
+                flag(report.g1_recall),
+                flag(report.g2_latency),
+                flag(report.g3_touch),
             );
         }
 
@@ -423,25 +442,25 @@ fn main() {
                 rec += recall_fraction(&got, t, k);
             }
             rec /= nq as f32;
-            let touch_f = (touch / nq as f64) / n as f64;
+            let touch_mean = touch / nq as f64;
+            let touch_f = touch_mean / n as f64;
             lats.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let p50 = lats[lats.len() / 2];
             let vs = rec / hnsw_rec.max(1e-6);
-            let latx = p50 / hnsw_p50.max(1e-9);
-            let (g1, g2, g3) = g123(rec, latx, touch_f);
+            let report = eval_gates(rec, hnsw_rec, p50, hnsw_p50, touch_mean, n);
             println!(
                 "{:>10} {:>7.4} {:>7.4} {:>8.3} {:>7.2} {:>7.3} {:>6.0} {:>5.1} {}{}{}",
                 format!("centB{b}"),
                 rec,
                 vs,
                 p50,
-                latx,
+                report.latency_ratio,
                 touch_f,
-                touch / nq as f64,
+                touch_mean,
                 cols_scanned / nq as f64,
-                flag(g1),
-                flag(g2),
-                flag(g3),
+                flag(report.g1_recall),
+                flag(report.g2_latency),
+                flag(report.g3_touch),
             );
         }
 
@@ -465,25 +484,25 @@ fn main() {
                 rec += recall_fraction(&got, t, k);
             }
             rec /= nq as f32;
-            let touch_f = (touch / nq as f64) / n as f64;
+            let touch_mean = touch / nq as f64;
+            let touch_f = touch_mean / n as f64;
             lats.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let p50 = lats[lats.len() / 2];
             let vs = rec / hnsw_rec.max(1e-6);
-            let latx = p50 / hnsw_p50.max(1e-9);
-            let (g1, g2, g3) = g123(rec, latx, touch_f);
+            let report = eval_gates(rec, hnsw_rec, p50, hnsw_p50, touch_mean, n);
             println!(
                 "{:>10} {:>7.4} {:>7.4} {:>8.3} {:>7.2} {:>7.3} {:>6.0} {:>5.1} {}{}{}",
                 format!("orclB{b}"),
                 rec,
                 vs,
                 p50,
-                latx,
+                report.latency_ratio,
                 touch_f,
-                touch / nq as f64,
+                touch_mean,
                 cols_scanned / nq as f64,
-                flag(g1),
-                flag(g2),
-                flag(g3),
+                flag(report.g1_recall),
+                flag(report.g2_latency),
+                flag(report.g3_touch),
             );
         }
         println!();

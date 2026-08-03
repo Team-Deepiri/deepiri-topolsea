@@ -11,17 +11,25 @@ shard-server = []
 dv-index-api = { path = "../dv-index-api" }
 dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
+dv-index-ivf = { path = "../dv-index-ivf" }
 dv-index-zcolumn = { path = "../dv-index-zcolumn" }
 dv-metadata = { path = "../dv-metadata" }
+dv-metrics = { path = "../dv-metrics" }
+dv-sparse = { path = "../dv-sparse" }
+dv-topk = { path = "../dv-topk" }
 dv-shard-remote = { path = "../dv-shard-remote" }
 dv-storage = { path = "../dv-storage" }
 dv-types = { path = "../dv-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+parking_lot = "0.12"
+roaring = "0.10"
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
 dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
 dv-index-api = { path = "../dv-index-api" }
+dv-server = { path = "../dv-server" }
 rand = "0.8"

@@ -7,13 +7,17 @@ members = [
     "crates/dv-index-flat",
     "crates/dv-index-hnsw",
     "crates/dv-index-zcolumn",
+    "crates/dv-index-ivf",
+    "crates/dv-sparse",
     "crates/dv-storage",
     "crates/dv-metadata",
+    "crates/dv-observe",
     "crates/dv-query",
     "crates/dv-shard-remote",
     "crates/dv-bench",
     "crates/dv-bindings-python",
     "crates/dv-cli",
+    "crates/dv-server",
 ]
 resolver = "2"
 
@@ -31,6 +35,6 @@ rand = "0.8"
 approx = "0.5"
 tempfile = "3"
 criterion = "0.5"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"

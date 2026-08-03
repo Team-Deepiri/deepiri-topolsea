@@ -1,7 +1,9 @@
 //! Applied-math discovery probe for Z-Column.
+#![allow(clippy::field_reassign_with_default, clippy::too_many_arguments)]
 //! Empirically maps dimensionless groups (τ, ρ_r, λ, β, φ) and finds Pareto
 //! regimes that could pass G1∧G2∧G3 — propelling Track M toward production.
 
+use dv_bench::normalize;
 use dv_index_api::VectorIndex;
 use dv_index_flat::FlatIndex;
 use dv_index_hnsw::HnswIndex;
@@ -41,16 +43,6 @@ fn gen_vectors(rng: &mut StdRng, n: usize, dim: usize, distro: Distro) -> Vec<Ve
                 .collect()
         }
     }
-}
-
-fn normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > f32::EPSILON {
-        for x in &mut v {
-            *x /= norm;
-        }
-    }
-    v
 }
 
 fn recall_mean(
@@ -173,8 +165,16 @@ fn run_zcol(
     let g3 = touch < 0.5;
     // Score: reward gate passes; penalize distance from gates (for Pareto ranking).
     let score = (if g1 { 10.0 } else { vs * 5.0 })
-        + (if g2 { 10.0 } else { (1.5 / lat_x.max(0.1)).min(5.0) })
-        + (if g3 { 10.0 } else { ((0.5 - touch).max(0.0) * 10.0) + (1.0 - touch) * 2.0 });
+        + (if g2 {
+            10.0
+        } else {
+            (1.5 / lat_x.max(0.1)).min(5.0)
+        })
+        + (if g3 {
+            10.0
+        } else {
+            ((0.5 - touch).max(0.0) * 10.0) + (1.0 - touch) * 2.0
+        });
 
     Row {
         distro: distro_name.into(),
@@ -330,16 +330,15 @@ fn main() {
                 "# baseline n={n} {dname}: HNSW recall@10={hnsw_recall:.4} p50={hnsw_p50:.3}ms (ef={hnsw_ef})"
             );
 
-            let regime_iter: Vec<(usize, u16, u16, usize)> =
-                if !quick && n >= 50_000 {
-                    regimes
-                        .iter()
-                        .copied()
-                        .filter(|(ef, rings, _, _)| *ef <= 64 || (*ef == 128 && *rings == 0))
-                        .collect()
-                } else {
-                    regimes.clone()
-                };
+            let regime_iter: Vec<(usize, u16, u16, usize)> = if !quick && n >= 50_000 {
+                regimes
+                    .iter()
+                    .copied()
+                    .filter(|(ef, rings, _, _)| *ef <= 64 || (*ef == 128 && *rings == 0))
+                    .collect()
+            } else {
+                regimes.clone()
+            };
 
             for &(ef, rings, beam_r, fcols) in &regime_iter {
                 let row = run_zcol(
@@ -424,21 +423,13 @@ fn main() {
     if all_three.is_empty() {
         println!("=== NO REGIME PASSED G1∧G2∧G3 ===");
         // Best G3 among near-G1
-        let mut near: Vec<_> = rows
-            .iter()
-            .filter(|r| r.vs_hnsw >= 0.90)
-            .cloned()
-            .collect();
+        let mut near: Vec<_> = rows.iter().filter(|r| r.vs_hnsw >= 0.90).cloned().collect();
         near.sort_by(|a, b| a.touch.partial_cmp(&b.touch).unwrap());
         println!("=== Lowest touch among recall≥0.90×HNSW ===");
         for r in near.iter().take(8) {
             print_row(r);
         }
-        let mut fast: Vec<_> = rows
-            .iter()
-            .filter(|r| r.vs_hnsw >= 0.90)
-            .cloned()
-            .collect();
+        let mut fast: Vec<_> = rows.iter().filter(|r| r.vs_hnsw >= 0.90).cloned().collect();
         fast.sort_by(|a, b| a.lat_x.partial_cmp(&b.lat_x).unwrap());
         println!("=== Lowest latency× among recall≥0.90×HNSW ===");
         for r in fast.iter().take(8) {
@@ -454,9 +445,10 @@ fn main() {
     // Dimensionless summary
     println!();
     println!("=== DIMENSIONLESS GROUPS (sphere n=10000, pure beam rings=0) ===");
-    for r in rows.iter().filter(|r| {
-        r.distro == "sphere" && r.n == 10_000 && r.rings == 0 && r.fcols == 0
-    }) {
+    for r in rows
+        .iter()
+        .filter(|r| r.distro == "sphere" && r.n == 10_000 && r.rings == 0 && r.fcols == 0)
+    {
         println!(
             "  β=ef/k={:.1}  τ={:.3}  ρ_r={:.3}  λ={:.2}  φ=mean_h={:.1}  nonempty={}",
             r.ef as f32 / k as f32,
