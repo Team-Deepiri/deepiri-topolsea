@@ -61,8 +61,8 @@ impl ServiceMetrics {
             return 0;
         }
         let mut buf = samples.clone();
-        let idx = ((pct.clamp(0.0, 1.0) * (buf.len() as f64 - 1.0)).round() as usize)
-            .min(buf.len() - 1);
+        let idx =
+            ((pct.clamp(0.0, 1.0) * (buf.len() as f64 - 1.0)).round() as usize).min(buf.len() - 1);
         // select_nth is O(n) average vs full sort — scrapes stay cheap at 2k samples.
         let (_, val, _) = buf.select_nth_unstable(idx);
         *val
@@ -171,8 +171,8 @@ impl ServiceMetrics {
                 if buf.is_empty() {
                     continue;
                 }
-                let idx = ((0.99_f64 * (buf.len() as f64 - 1.0)).round() as usize)
-                    .min(buf.len() - 1);
+                let idx =
+                    ((0.99_f64 * (buf.len() as f64 - 1.0)).round() as usize).min(buf.len() - 1);
                 let (_, val, _) = buf.select_nth_unstable(idx);
                 let p99 = *val;
                 let safe: String = route

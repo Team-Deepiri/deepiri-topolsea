@@ -226,9 +226,9 @@ fn default_index() -> String {
 fn build_collection_config(
     ns: &str,
     body: &CreateCollectionBody,
-) -> Result<CollectionConfig, Response> {
-    let metric =
-        DistanceMetric::from_str(&body.metric).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+) -> Result<CollectionConfig, Box<Response>> {
+    let metric = DistanceMetric::from_str(&body.metric)
+        .map_err(|e| Box::new(err(StatusCode::BAD_REQUEST, e)))?;
     let index_kind = match body.index.to_lowercase().as_str() {
         "flat" => IndexKind::Flat,
         "zcolumn" => IndexKind::ZColumn,
@@ -274,7 +274,7 @@ async fn create_collection(
     Json(body): Json<CreateCollectionBody>,
 ) -> Result<impl IntoResponse, Response> {
     let ns = require_auth(&headers, &state)?;
-    let config = build_collection_config(&ns, &body)?;
+    let config = build_collection_config(&ns, &body).map_err(|e| *e)?;
     state
         .db
         .write()
@@ -1068,7 +1068,7 @@ async fn create_collection_ns(
     Json(body): Json<CreateCollectionBody>,
 ) -> Result<impl IntoResponse, Response> {
     let ns = require_ns(&headers, &state, &ns)?;
-    let config = build_collection_config(&ns, &body)?;
+    let config = build_collection_config(&ns, &body).map_err(|e| *e)?;
     state
         .db
         .write()
