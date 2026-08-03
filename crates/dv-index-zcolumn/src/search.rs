@@ -42,6 +42,8 @@ pub struct RevertBeamSearch<'a> {
     dimension: usize,
     predictor: &'a mut LayerPredictor,
     stats: &'a mut SearchStats,
+    /// When set, only score ids that pass this predicate (payload-aware ANN).
+    eligible: Option<&'a dyn Fn(VectorId) -> bool>,
 }
 
 impl<'a> RevertBeamSearch<'a> {
@@ -62,7 +64,13 @@ impl<'a> RevertBeamSearch<'a> {
             dimension,
             predictor,
             stats,
+            eligible: None,
         }
+    }
+
+    pub fn with_eligible(mut self, eligible: &'a dyn Fn(VectorId) -> bool) -> Self {
+        self.eligible = Some(eligible);
+        self
     }
 
     pub fn run(&mut self, query: &[f32], params: SearchParams) -> Vec<(VectorId, f32)> {
@@ -264,6 +272,11 @@ impl<'a> RevertBeamSearch<'a> {
             self.dimension,
         );
         for (i, &id) in col.ids.iter().enumerate() {
+            if let Some(pred) = self.eligible {
+                if !pred(id) {
+                    continue;
+                }
+            }
             if !visited.insert(id) {
                 continue;
             }

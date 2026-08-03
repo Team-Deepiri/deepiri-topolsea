@@ -1,0 +1,30 @@
+[package]
+name = "dv-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "topolsea-server"
+path = "src/main.rs"
+
+[dependencies]
+dv-query = { path = "../dv-query" }
+dv-metadata = { path = "../dv-metadata" }
+dv-shard-remote = { path = "../dv-shard-remote" }
+dv-types = { path = "../dv-types" }
+axum = { version = "0.7", features = ["json"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

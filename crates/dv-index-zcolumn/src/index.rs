@@ -13,7 +13,7 @@ use dv_types::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 #[derive(Serialize, Deserialize)]
 pub struct ZColumnIndex {
@@ -38,6 +38,9 @@ pub struct ZColumnIndex {
     columns_scanned: AtomicU64,
     #[serde(skip)]
     compaction: CompactionEngine,
+    /// Access hits queued off the exclusive search path (drained on persist/rebalance).
+    #[serde(skip)]
+    pending_access: Mutex<Vec<(Vec<VectorId>, u64)>>,
 }
 
 impl Clone for ZColumnIndex {
@@ -55,6 +58,7 @@ impl Clone for ZColumnIndex {
             revert_count: AtomicU64::new(self.revert_count.load(Ordering::Relaxed)),
             columns_scanned: AtomicU64::new(self.columns_scanned.load(Ordering::Relaxed)),
             compaction: CompactionEngine::new(),
+            pending_access: Mutex::new(Vec::new()),
         }
     }
 }
@@ -76,6 +80,7 @@ impl ZColumnIndex {
             revert_count: AtomicU64::new(0),
             columns_scanned: AtomicU64::new(0),
             compaction: CompactionEngine::new(),
+            pending_access: Mutex::new(Vec::new()),
         }
     }
 
@@ -131,6 +136,16 @@ impl ZColumnIndex {
         top_k: usize,
         ef: usize,
     ) -> Result<(Vec<SearchHit>, QueryExplain)> {
+        self.search_with_explain_filtered(query, top_k, ef, None)
+    }
+
+    pub fn search_with_explain_filtered(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        ef: usize,
+        eligible: Option<&dyn Fn(VectorId) -> bool>,
+    ) -> Result<(Vec<SearchHit>, QueryExplain)> {
         if query.len() != self.dimension {
             return Err(TopolseaError::DimensionMismatch {
                 expected: self.dimension,
@@ -170,6 +185,9 @@ impl ZColumnIndex {
             &mut stats,
             &mut predictor,
         );
+        if let Some(pred) = eligible {
+            searcher = searcher.with_eligible(pred);
+        }
         let (coarse, mut explain) = searcher.run_with_explain(query, params);
         let col_refs: Vec<&ColumnStack> = self.columns.values().collect();
         predictor.observe(query, &self.grid, &col_refs, self.metric, &explain);
@@ -192,6 +210,12 @@ impl ZColumnIndex {
         Ok((hits, explain))
     }
 
+    /// Collapse/promote columns from the access ledger.
+    ///
+    /// Operational note: Phase A calls this from `Collection::persist()` / auto-flush,
+    /// not after every query. `record_access` only queues ledger hits so readers stay
+    /// `&self`. If access patterns shift rapidly between persists, search quality can
+    /// lag until the next flush; query-count-triggered rebalance is a Track M option.
     pub fn rebalance(&mut self) {
         let vectors = self.vectors.clone();
         self.compaction.collapse_and_promote(
@@ -203,21 +227,32 @@ impl ZColumnIndex {
         );
     }
 
-    /// Update access ledgers for columns that served query results.
-    pub fn record_access(&mut self, ids: &[VectorId], now_ms: u64) {
-        let half_life = self.config.decay_half_life_ms;
-        for col in self.columns.values_mut() {
-            col.ledger.decay(now_ms, half_life);
-            if col.ids.iter().any(|id| ids.contains(id)) {
-                col.ledger.record_hit(now_ms);
-            }
+    /// Queue access ledger updates without requiring `&mut self` (rebalance stays on writer/persist).
+    pub fn record_access(&self, ids: &[VectorId], now_ms: u64) {
+        if ids.is_empty() {
+            return;
         }
-        let count = self.query_count.load(Ordering::Relaxed);
-        if self.config.rebalance_interval > 0
-            && count > 0
-            && count.is_multiple_of(self.config.rebalance_interval)
-        {
-            self.rebalance();
+        if let Ok(mut q) = self.pending_access.lock() {
+            q.push((ids.to_vec(), now_ms));
+        }
+    }
+
+    /// Apply queued access updates to column ledgers. Does not rebalance.
+    pub fn flush_access(&mut self) {
+        let pending = {
+            let Ok(mut q) = self.pending_access.lock() else {
+                return;
+            };
+            std::mem::take(&mut *q)
+        };
+        let half_life = self.config.decay_half_life_ms;
+        for (ids, now_ms) in pending {
+            for col in self.columns.values_mut() {
+                col.ledger.decay(now_ms, half_life);
+                if col.ids.iter().any(|id| ids.contains(id)) {
+                    col.ledger.record_hit(now_ms);
+                }
+            }
         }
     }
 
@@ -265,6 +300,7 @@ impl ZColumnIndex {
         idx.columns_scanned = AtomicU64::new(0);
         idx.compaction = CompactionEngine::new();
         idx.projection = RoutingProjection::new(idx.dimension, idx.config.projection_seed);
+        idx.pending_access = Mutex::new(Vec::new());
         Ok(idx)
     }
 

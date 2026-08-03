@@ -14,6 +14,7 @@ members = [
     "crates/dv-bench",
     "crates/dv-bindings-python",
     "crates/dv-cli",
+    "crates/dv-server",
 ]
 resolver = "2"
 
@@ -31,6 +32,6 @@ rand = "0.8"
 approx = "0.5"
 tempfile = "3"
 criterion = "0.5"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"

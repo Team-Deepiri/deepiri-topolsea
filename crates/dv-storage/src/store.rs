@@ -1,6 +1,7 @@
 use crate::column_format::ZColumnManifest;
 use crate::column_segment::{ColumnCellRecord, ColumnSegment};
 use crate::segment::VectorSegment;
+use crate::wal::Wal;
 use dv_types::{CollectionConfig, Result, TopolseaError, VectorId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,6 +12,9 @@ use std::path::{Path, PathBuf};
 struct CollectionManifest {
     config: CollectionConfig,
     next_id: u64,
+    /// Last snapshot sequence; WAL records with seq > snapshot_seq must be replayed.
+    #[serde(default)]
+    snapshot_seq: u64,
 }
 
 /// On-disk layout:
@@ -64,12 +68,15 @@ impl StorageEngine {
         let manifest = CollectionManifest {
             config: config.clone(),
             next_id: 0,
+            snapshot_seq: 0,
         };
-        write_json(dir.join("manifest.json"), &manifest)?;
-        write_json(
+        atomic_write_json(dir.join("manifest.json"), &manifest)?;
+        atomic_write_json(
             dir.join("metadata.json"),
             &HashMap::<String, serde_json::Value>::new(),
         )?;
+        // Create empty WAL header.
+        let _ = Wal::open(dir.join("wal.log"))?;
         Ok(())
     }
 
@@ -96,8 +103,46 @@ impl StorageEngine {
         let mut manifest: CollectionManifest = read_json(&path)?;
         let id = VectorId(manifest.next_id);
         manifest.next_id += 1;
-        write_json(path, &manifest)?;
+        atomic_write_json(path, &manifest)?;
         Ok(id)
+    }
+
+    /// Allocate an id in-memory without rewriting the manifest (WAL owns durability).
+    pub fn peek_allocate_id(&self, name: &str) -> Result<VectorId> {
+        let path = self.collection_dir(name).join("manifest.json");
+        let manifest: CollectionManifest = read_json(&path)?;
+        Ok(VectorId(manifest.next_id))
+    }
+
+    pub fn set_next_id(&self, name: &str, next_id: u64) -> Result<()> {
+        let path = self.collection_dir(name).join("manifest.json");
+        let mut manifest: CollectionManifest = read_json(&path)?;
+        if next_id > manifest.next_id {
+            manifest.next_id = next_id;
+            atomic_write_json(path, &manifest)?;
+        }
+        Ok(())
+    }
+
+    pub fn snapshot_seq(&self, name: &str) -> Result<u64> {
+        let manifest: CollectionManifest =
+            read_json(self.collection_dir(name).join("manifest.json"))?;
+        Ok(manifest.snapshot_seq)
+    }
+
+    pub fn set_snapshot_seq(&self, name: &str, seq: u64) -> Result<()> {
+        let path = self.collection_dir(name).join("manifest.json");
+        let mut manifest: CollectionManifest = read_json(&path)?;
+        manifest.snapshot_seq = seq;
+        atomic_write_json(path, &manifest)
+    }
+
+    pub fn open_wal(&self, name: &str) -> Result<Wal> {
+        Wal::open(self.collection_dir(name).join("wal.log"))
+    }
+
+    pub fn wal_path(&self, name: &str) -> PathBuf {
+        self.collection_dir(name).join("wal.log")
     }
 
     pub fn write_vectors(&self, name: &str, records: &[(VectorId, &[f32])]) -> Result<()> {
@@ -120,8 +165,7 @@ impl StorageEngine {
     }
 
     pub fn write_index_blob(&self, name: &str, data: &[u8]) -> Result<()> {
-        fs::write(self.collection_dir(name).join("index.bin"), data)?;
-        Ok(())
+        atomic_write_bytes(self.collection_dir(name).join("index.bin"), data)
     }
 
     pub fn read_index_blob(&self, name: &str) -> Result<Vec<u8>> {
@@ -137,7 +181,7 @@ impl StorageEngine {
         name: &str,
         metadata: &HashMap<String, serde_json::Value>,
     ) -> Result<()> {
-        write_json(self.collection_dir(name).join("metadata.json"), metadata)
+        atomic_write_json(self.collection_dir(name).join("metadata.json"), metadata)
     }
 
     pub fn read_metadata_map(&self, name: &str) -> Result<HashMap<String, serde_json::Value>> {
@@ -159,7 +203,7 @@ impl StorageEngine {
     pub fn write_zcolumn_manifest(&self, name: &str, manifest: &ZColumnManifest) -> Result<()> {
         let dir = self.columns_dir(name);
         fs::create_dir_all(&dir)?;
-        write_json(dir.join("manifest.json"), manifest)
+        atomic_write_json(dir.join("manifest.json"), manifest)
     }
 
     pub fn read_zcolumn_manifest(&self, name: &str) -> Result<ZColumnManifest> {
@@ -218,7 +262,7 @@ impl StorageEngine {
     ) -> Result<()> {
         let dir = self.shards_dir();
         fs::create_dir_all(&dir)?;
-        write_json(self.shard_manifest_path(&manifest.logical_name), manifest)
+        atomic_write_json(self.shard_manifest_path(&manifest.logical_name), manifest)
     }
 
     pub fn read_shard_manifest(
@@ -272,7 +316,7 @@ impl StorageEngine {
         index: &crate::shard_format::ShardRoutingIndex,
     ) -> Result<()> {
         fs::create_dir_all(self.shards_dir())?;
-        write_json(self.shard_routing_path(logical_name), index)
+        atomic_write_json(self.shard_routing_path(logical_name), index)
     }
 
     pub fn read_shard_routing(
@@ -297,7 +341,7 @@ impl StorageEngine {
         config: &crate::shard_format::ShardClusterConfig,
     ) -> Result<()> {
         fs::create_dir_all(self.shards_dir())?;
-        write_json(self.shard_cluster_path(logical_name), config)
+        atomic_write_json(self.shard_cluster_path(logical_name), config)
     }
 
     pub fn read_shard_cluster(
@@ -312,9 +356,19 @@ impl StorageEngine {
     }
 }
 
-fn write_json<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Result<()> {
+fn atomic_write_json<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Result<()> {
     let data = serde_json::to_vec_pretty(value)?;
-    fs::write(path, data)?;
+    atomic_write_bytes(path, &data)
+}
+
+fn atomic_write_bytes(path: impl AsRef<Path>, data: &[u8]) -> Result<()> {
+    let path = path.as_ref();
+    let tmp = path.with_extension("tmp");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&tmp, data)?;
+    fs::rename(&tmp, path)?;
     Ok(())
 }
 

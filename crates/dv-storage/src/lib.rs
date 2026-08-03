@@ -4,6 +4,7 @@ mod format;
 mod segment;
 mod shard_format;
 mod store;
+mod wal;
 
 pub use column_format::{
     ColumnFileHeader, QuantTierTag, ZColumnManifest, COLUMN_MAGIC, COLUMN_VERSION,
@@ -15,3 +16,4 @@ pub use shard_format::{
     parse_physical_shard_name, ShardClusterConfig, ShardManifest, ShardRoutingIndex,
 };
 pub use store::StorageEngine;
+pub use wal::{wal_upsert_ids, Wal, WalRecord, WAL_MAGIC, WAL_VERSION};

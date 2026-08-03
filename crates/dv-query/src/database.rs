@@ -1,7 +1,9 @@
 use dv_storage::{ShardClusterConfig, ShardManifest, StorageEngine};
 use dv_types::{CollectionConfig, DistanceMetric, IndexKind, Result, TopolseaError, VectorId};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::collection::Collection;
 use super::query::QueryResult;
@@ -16,10 +18,15 @@ fn open_collection(storage: &StorageEngine, config: CollectionConfig) -> Result<
     )
 }
 
+pub type CollectionHandle = Arc<RwLock<Collection>>;
+
+/// Shared database handle for concurrent readers + writers.
+pub type SharedDatabase = Arc<RwLock<Database>>;
+
 /// Top-level database handle managing multiple collections on disk.
 pub struct Database {
     storage: StorageEngine,
-    collections: HashMap<String, Collection>,
+    collections: HashMap<String, CollectionHandle>,
 }
 
 impl Database {
@@ -29,6 +36,10 @@ impl Database {
             storage,
             collections: HashMap::new(),
         })
+    }
+
+    pub fn into_shared(self) -> SharedDatabase {
+        Arc::new(RwLock::new(self))
     }
 
     pub fn storage(&self) -> &StorageEngine {
@@ -48,15 +59,16 @@ impl Database {
         self.storage.list_shard_manifests()
     }
 
-    pub fn create_collection(&mut self, config: CollectionConfig) -> Result<&mut Collection> {
+    pub fn create_collection(&mut self, config: CollectionConfig) -> Result<CollectionHandle> {
         let name = config.name.clone();
         if self.collections.contains_key(&name) || self.storage.collection_exists(&name) {
             return Err(TopolseaError::CollectionExists(name));
         }
         self.storage.create_collection(config.clone())?;
         let col = open_collection(&self.storage, config)?;
-        self.collections.insert(name.clone(), col);
-        Ok(self.collections.get_mut(&name).unwrap())
+        let handle = Arc::new(RwLock::new(col));
+        self.collections.insert(name, Arc::clone(&handle));
+        Ok(handle)
     }
 
     /// Create a logically sharded collection backed by `num_shards` physical collections.
@@ -121,7 +133,8 @@ impl Database {
         let physical = manifest.physical_name(shard);
         let id = {
             let col = self.get_collection(&physical)?;
-            col.upsert(external_id, vector.clone(), metadata)?
+            let id = col.write().upsert(external_id, vector.clone(), metadata)?;
+            id
         };
 
         if manifest.index_kind == IndexKind::ZColumn {
@@ -196,7 +209,7 @@ impl Database {
             }
             let physical = manifest.physical_name(shard_id);
             let col = self.get_collection(&physical)?;
-            let mut partial = col.query(query_vector, top_k, filter, ef)?;
+            let mut partial = col.read().query(query_vector, top_k, filter, ef)?;
             merged.append(&mut partial);
         }
 
@@ -271,7 +284,7 @@ impl Database {
         let mut total = 0usize;
         for shard_id in 0..manifest.num_shards {
             let physical = manifest.physical_name(shard_id);
-            total += self.get_collection(&physical)?.len();
+            total += self.get_collection(&physical)?.read().len();
         }
         Ok(total)
     }
@@ -292,7 +305,7 @@ impl Database {
         name: &str,
         dimension: usize,
         metric: DistanceMetric,
-    ) -> Result<&mut Collection> {
+    ) -> Result<CollectionHandle> {
         self.get_or_create_collection_with_config(name, dimension, metric, IndexKind::Hnsw)
     }
 
@@ -302,7 +315,7 @@ impl Database {
         dimension: usize,
         metric: DistanceMetric,
         index_kind: IndexKind,
-    ) -> Result<&mut Collection> {
+    ) -> Result<CollectionHandle> {
         if self.storage.shard_manifest_exists(name) {
             return Err(TopolseaError::InvalidConfig(format!(
                 "'{name}' is a sharded logical collection — use upsert_sharded/query_sharded"
@@ -312,7 +325,8 @@ impl Database {
             if self.storage.collection_exists(name) {
                 let config = self.storage.load_config(name)?;
                 let col = open_collection(&self.storage, config)?;
-                self.collections.insert(name.to_string(), col);
+                self.collections
+                    .insert(name.to_string(), Arc::new(RwLock::new(col)));
             } else {
                 let mut config = CollectionConfig::new(name, dimension, metric);
                 config.index_kind = index_kind;
@@ -324,10 +338,10 @@ impl Database {
                 return self.create_collection(config);
             }
         }
-        Ok(self.collections.get_mut(name).unwrap())
+        Ok(Arc::clone(self.collections.get(name).unwrap()))
     }
 
-    pub fn get_collection(&mut self, name: &str) -> Result<&mut Collection> {
+    pub fn get_collection(&mut self, name: &str) -> Result<CollectionHandle> {
         if self.storage.shard_manifest_exists(name) {
             return Err(TopolseaError::InvalidConfig(format!(
                 "'{name}' is a sharded logical collection — use shard physical names or sharded APIs"
@@ -339,9 +353,10 @@ impl Database {
             }
             let config = self.storage.load_config(name)?;
             let col = open_collection(&self.storage, config)?;
-            self.collections.insert(name.to_string(), col);
+            self.collections
+                .insert(name.to_string(), Arc::new(RwLock::new(col)));
         }
-        Ok(self.collections.get_mut(name).unwrap())
+        Ok(Arc::clone(self.collections.get(name).unwrap()))
     }
 
     pub fn delete_collection(&mut self, name: &str) -> Result<()> {
@@ -353,8 +368,8 @@ impl Database {
     }
 
     pub fn persist_all(&mut self) -> Result<()> {
-        for col in self.collections.values_mut() {
-            col.persist()?;
+        for col in self.collections.values() {
+            col.write().persist()?;
         }
         Ok(())
     }

@@ -6,7 +6,7 @@ mod shard;
 pub mod shard_server;
 
 pub use collection::Collection;
-pub use database::Database;
+pub use database::{CollectionHandle, Database, SharedDatabase};
 pub use dv_storage::ShardManifest;
 pub use planner::{IndexPlanner, QueryPlan, QueryPlannerInput};
 pub use query::{QueryExplainResult, QueryOptions, QueryResult, UpsertRecord};

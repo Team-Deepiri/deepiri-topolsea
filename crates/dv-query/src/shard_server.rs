@@ -17,6 +17,8 @@ pub struct ShardServerConfig {
 }
 
 /// Lightweight HTTP server exposing shard query on a single physical collection.
+///
+/// Prefer `dv_server::BackgroundServer` with `shard_collection` (axum) for new code.
 pub struct ShardQueryServer {
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -172,7 +174,7 @@ fn execute_local_query(
 ) -> Result<ShardQueryResponse, TopolseaError> {
     let mut db = crate::Database::open(data_dir)?;
     let col = db.get_collection(collection)?;
-    let results = col.query(&req.vector, req.top_k, None, req.ef)?;
+    let results = col.read().query(&req.vector, req.top_k, None, req.ef)?;
     let hits = results
         .into_iter()
         .map(|r| dv_shard_remote::ShardQueryHit {
