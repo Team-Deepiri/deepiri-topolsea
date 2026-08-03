@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +32,9 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Synthetic ANN bench (B9)
+        run: cargo run -p dv-bench --release --bin topolsea-ann-bench -- --compare --top-k 10
 
   python:
     runs-on: ubuntu-latest
@@ -82,7 +84,9 @@ jobs:
         run: |
           ./target/release/topolsea --data-dir /tmp/topolsea-ci list
           ./target/release/topolsea --data-dir /tmp/topolsea-ci create smoke --dimension 4 --metric cosine
+          ./target/release/topolsea --data-dir /tmp/topolsea-ci create zsmoke --dimension 4 --metric cosine --index zcolumn
           ./target/release/topolsea --data-dir /tmp/topolsea-ci info smoke
+          ./target/release/topolsea --data-dir /tmp/topolsea-ci info zsmoke
 
       - name: Python smoke test
         run: |

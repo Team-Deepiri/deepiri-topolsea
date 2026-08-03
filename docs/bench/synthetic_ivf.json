@@ -1,0 +1,12 @@
+{
+  "dataset": "synthetic_2k_d32",
+  "index": "Ivf",
+  "metric": "l2",
+  "n_base": 2000,
+  "n_queries": 50,
+  "top_k": 10,
+  "recall_at_k": 1.0,
+  "qps": 39162.946839432705,
+  "build_secs": 0.001744911,
+  "notes": "Memory-bound IVF path (optional PQ)"
+}

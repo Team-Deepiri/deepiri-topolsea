@@ -5,14 +5,43 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 criterion = { workspace = true }
+clap = { workspace = true }
 dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
+dv-index-ivf = { path = "../dv-index-ivf" }
+dv-index-zcolumn = { path = "../dv-index-zcolumn" }
 dv-index-api = { path = "../dv-index-api" }
+dv-metrics = { path = "../dv-metrics" }
 dv-types = { path = "../dv-types" }
 rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "topolsea-prove"
+path = "src/bin/prove.rs"
+
+[[bin]]
+name = "topolsea-ann-bench"
+path = "src/bin/ann_bench.rs"
+
+[[bin]]
+name = "topolsea-math-probe"
+path = "src/bin/math_probe.rs"
+
+[[bin]]
+name = "topolsea-math-localize"
+path = "src/bin/math_localize.rs"
 
 [[bench]]
 name = "index_bench"
+harness = false
+
+[[bench]]
+name = "recall_bench"
 harness = false

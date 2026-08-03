@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Default)]
@@ -12,6 +13,18 @@ pub struct UpsertRecord {
     pub external_id: String,
     pub vector: Vec<f32>,
     pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueryExplainResult {
+    pub index_kind: String,
+    pub entry_layer: Option<u8>,
+    pub deepest_layer: Option<u8>,
+    pub revert_count: u64,
+    pub columns_scanned: u64,
+    pub column_paths: Vec<String>,
+    pub strategy: String,
+    pub planner_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]

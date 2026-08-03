@@ -114,3 +114,4 @@ secrets.json
 native_data/
 *.db
 *.sqlite3
+.worktrees/

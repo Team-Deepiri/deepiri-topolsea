@@ -55,5 +55,51 @@ class Collection:
             for item in raw
         ]
 
+    def query_batch(
+        self,
+        query_vectors: list[list[float]],
+        top_k: int = 10,
+        filter: dict[str, Any] | None = None,
+        ef: int = 64,
+    ) -> list[list[QueryResult]]:
+        raw = self._native.query_batch(query_vectors, top_k, filter, ef)
+        return [
+            [
+                QueryResult(
+                    id=item["id"],
+                    distance=float(item["distance"]),
+                    score=float(item["score"]),
+                    metadata=item.get("metadata"),
+                )
+                for item in batch
+            ]
+            for batch in raw
+        ]
+
     def persist(self) -> None:
         self._native.persist()
+
+    def explain_query(
+        self,
+        query_vector: list[float],
+        top_k: int = 10,
+        filter: dict[str, Any] | None = None,
+        ef: int = 64,
+    ) -> dict[str, Any]:
+        raw = self._native.explain_query(query_vector, top_k, filter, ef)
+        return {
+            "results": [
+                QueryResult(
+                    id=item["id"],
+                    distance=float(item["distance"]),
+                    score=float(item["score"]),
+                    metadata=item.get("metadata"),
+                )
+                for item in raw["results"]
+            ],
+            "explain": raw["explain"],
+        }
+
+    def zcolumn_stats(self) -> dict[str, Any] | None:
+        stats = self._native.zcolumn_stats()
+        return stats if stats is not None else None
