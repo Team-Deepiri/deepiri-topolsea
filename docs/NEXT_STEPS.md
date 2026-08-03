@@ -1,163 +1,157 @@
 # What's Next — Deepiri Topolsea
 
-Vision: turn Topolsea from a strong **embedded ANN engine** (Flat / HNSW / Z-Column + explain + fractal shards) into a **production-standard vector database** — durable, concurrent, filterable, operable, and honest about recall/latency tradeoffs — in the same class as self-hosted Qdrant / Milvus / Weaviate for the workloads that matter to Deepiri (RAG, metadata-filtered retrieval, multi-node shards).
+Vision: turn Topolsea from a strong **embedded ANN engine** into a **production-standard vector database** — durable, concurrent, filterable, operable, and honest about recall/latency tradeoffs — in the same class as self-hosted Qdrant / Milvus / Weaviate for Deepiri workloads (RAG, metadata-filtered retrieval, multi-node shards).
 
-Langlands / p-adic / ghost momentum in `DESIGN_PLAN.md` stay **research-only** until Phase A–B land. Novel index claims must pass measured gates before marketing.
+Langlands / p-adic / ghost momentum in `DESIGN_PLAN.md` stay **research-only**. Novel index claims must pass measured gates before marketing.
 
 ---
 
-## Where we are (baseline)
+## Status (2026-08-01)
 
-| Already real | Not yet production |
+Phased product work and Track M landed as **stacked PRs** (merge order **#13 → #14 → #15 → #16**, after or alongside this docs line):
+
+| Track | PR | Status |
+|---|---|---|
+| Phase A — database product | [#13](https://github.com/Team-Deepiri/deepiri-topolsea/pull/13) | Implemented (`docs/PHASE_A.md` on branch) |
+| Phase B — RAG / product | [#14](https://github.com/Team-Deepiri/deepiri-topolsea/pull/14) | Implemented (`docs/PHASE_B.md`) |
+| Phase C — ops | [#15](https://github.com/Team-Deepiri/deepiri-topolsea/pull/15) | Implemented (`docs/PHASE_C.md`) |
+| Track M — Z-Column honesty | [#16](https://github.com/Team-Deepiri/deepiri-topolsea/pull/16) | Implemented (`docs/PHASE_M.md`); **gates not yet proven** |
+
+**Still true:** product ANN default = **HNSW**. Z-Column = explain + fractal shard keys until **G1∧G2∧G3** pass under bounded touch. Do not market “beats HNSW.”
+
+### Where we are now
+
+| Already real (A–C + M code) | Not yet production-complete |
 |---|---|
-| HNSW + Flat + Z-Column indexes | WAL / crash-safe auto-durability |
-| SIMD distances, U8/U16 column quant | Concurrent multi-client server |
-| On-disk segments + index DR rebuild | Payload-aware filtered ANN (today: post-filter ×10) |
-| Metadata eq / `$and` / `$or` | Full filter DSL (`ne`/`gt`/`in`/ranges named but unused) |
-| Fractal sharding + toy HTTP fan-out | Replication, HA, warm shard processes |
-| Python client + CLI + CI | Docker/Helm, Prometheus, auth/tenancy |
-| Explain API (Z-Column) | Hybrid sparse+dense search |
-| `topolsea-prove` / `topolsea-math-probe` | Public ANN-Benchmarks under **bounded** touch |
+| WAL + auto-flush, crash recovery | External / replicated WAL (Kafka, Woodpecker-class) |
+| Thread-safe collections + axum REST, API keys, TLS | gRPC / stable multi-language SDKs at peer parity |
+| Filter DSL + payload-constrained ANN | Filtered recall SLOs under real tenant schemas |
+| Hybrid BM25 + dense (RRF / linear) | Learned sparse / cross-encoder rerank product path |
+| Sealed mmap segments, IVF/PQ memory-bound path | DiskANN-class cold tier; billion-scale soak |
+| ANN-bench harness + synthetic compare | Published public ANN-Benchmarks with gate-backed Z-Column story |
+| Replica sync + membership + circuit failover | Multi-writer consensus / coordinator HA |
+| Prometheus + request ids / traceparent | Full OTLP export + SLO dashboards |
+| Namespaces, Docker/Helm, ServiceMonitor | Multi-region, backup encryption, GDPR delete propagation |
+| Snapshots create/restore (scoped) | Continuous backup, PITR, restore drills |
+| Track M: prune, graph, budgets, `GateReport` | **M5 re-measure: G1∧G2∧G3 on 10k then 100k** |
 
-**Measured (2026-07-31, n=10k, 128d, cosine):** default Z-Column hits recall ≥ HNSW but touches ~100% of the corpus and is ~5× slower p50. High recall is bought by exhaustive-ish fallback, not sparse fractal walk. Details: [`docs/math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md), math writeup: [`docs/math/Z_COLUMN_APPLIED_MATH.md`](math/Z_COLUMN_APPLIED_MATH.md).
-
-**Implication:** run a **Math track (M)** in parallel with database Phase A. Do **not** publish “beats HNSW” ANN-Benchmarks until gates G1∧G2∧G3 pass under bounded candidate touch.
+Math cliff (2026-07-31): whole-column expand of oracle’s ~6–8 tall columns hits τ≈0.68 — G1∧G3 impossible without **intra-column prune + height balance** (now in Track M code). Details: [`docs/math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md).
 
 ---
 
 ## North star — “as good as a production vector DB”
 
-Done means an outsider can:
+An outsider should be able to:
 
-1. **Run it as a service** — REST (and ideally gRPC), health, API keys, TLS  
-2. **Trust writes** — upsert/delete survive crash (WAL + snapshot); recovery is automatic  
-3. **Serve many clients** — concurrent readers + writers; no `&mut` on the hot search path  
-4. **Filter correctly** — selective metadata filters with recall close to filtered exact search (not overfetch-and-drop)  
-5. **Retrieve for RAG** — dense ANN + hybrid (BM25/sparse) + rerank hooks  
-6. **Scale out** — fractal shards that pass filters/metadata, with retries and warm processes; later replicas  
+1. **Run it as a service** — REST (and ideally gRPC), health/ready, API keys, TLS  
+2. **Trust writes** — upsert/delete survive crash; recovery automatic  
+3. **Serve many clients** — concurrent readers + writers on the hot path  
+4. **Filter correctly** — selective metadata with recall close to filtered exact  
+5. **Retrieve for RAG** — dense ANN + hybrid + rerank hooks  
+6. **Scale out** — shards with filters/metadata, retries, replicas  
 7. **Operate it** — metrics, traces, backups, Docker/Helm, multi-tenant namespaces  
-8. **Prove it** — published recall/QPS/memory vs HNSW (and ANN-Benchmarks) with explicit touch budgets  
+8. **Prove it** — published recall/QPS/memory vs HNSW with explicit touch budgets  
 
-Milvus/Qdrant-level polish (coordinator HA, Woodpecker/Kafka WAL, DiskANN, GPU CAGRA) is Phase C+ aspiration — not required to call the first production cut “real.”
+**First production cut (A–C):** staging-ready for an internal RAG app — largely **done in code**, pending merge + soak.  
+**Production-standard bar (Phase D+):** what peers expect for self-hosted Qdrant/Milvus-class ops and proof — [`docs/PHASE_D.md`](PHASE_D.md).
 
 ---
 
-## Two tracks (do both)
+## Go / no-go gates (G1∧G2∧G3)
 
-```
-Track M (index honesty)          Track A→C (database product)
-───────────────────────          ───────────────────────────
-M3 coarse quant / intra-col      A1 WAL + auto-flush
-M4 height-balance + move-not-copy A2 thread-safe collection
-M-graph centroid column graph    A3 axum/tonic service
-M2 hard V_touch budget           A4 payload-aware filtered ANN
-M1 conditional fallback          A5 finish filter DSL
-M5 re-measure gates
-        \                               /
-         \                             /
-          └── public ANN-Benchmarks ──┘
-                    (only if G1∧G2∧G3)
-```
-
-### Go/no-go gates (Z-Column vs HNSW)
+Canonical definitions (also used by `dv_bench::GateReport` / `GateInput.candidates_touched`):
 
 | Gate | Pass if |
 |---|---|
 | **G1** Recall | `recall_Z / recall_HNSW ≥ 0.98` @ k=10 |
 | **G2** Latency | `p50_Z / p50_HNSW ≤ 1.5` |
-| **G3** Touch | `candidates_touched / N < 0.5` (sublinear spirit) |
+| **G3** Touch | `candidates_touched / N < 0.5` |
 
-Protocol extras (revert rate, compaction recall) in [`docs/Z_COLUMN_PROTOCOL.md`](Z_COLUMN_PROTOCOL.md).
-
----
-
-## Immediate build order (corrected)
-
-Not “ship benches first.” Order:
-
-1. **Track M — make Z-Column ANN real** — after Phase-2 localize/oracle: whole-column expand (even perfect column pick) cannot hit G1∧G3 because GT lives in ~6–8 **tall** columns (τ≈0.68). Next code is **M3 intra-column prune + M4 height-balance**, then **centroid-graph** to close the centroid→oracle gap, then hard `V_touch` + conditional fallback (see [`math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md)). Until then default product ANN = **HNSW**; Z-Column = explain + shard keys.  
-2. **WAL + auto-flush** — durable by default  
-3. **Thread-safe collection + concurrent server** (REST; gRPC when REST is stable)  
-4. **Real filtered search + complete filter ops**  
-5. **Public ANN-Benchmarks** — only after G1∧G2∧G3 (or publish HNSW numbers and Z-Column as explain/shard story)
-
-Crate-level prep: [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md).
+Protocol extras: [`docs/Z_COLUMN_PROTOCOL.md`](Z_COLUMN_PROTOCOL.md).
 
 ---
 
-## Phase A — Become a real database (must-have)
+## Immediate next steps (ordered)
 
-| # | Item | Outcome |
+Not “more features before proof.” Order:
+
+### 1. Land the stack
+
+1. Merge Phase A → B → C → Track M (`#13` → `#14` → `#15` → `#16`) into `main` (or a release branch).  
+2. Cut a staging image from that tip; run Docker Compose / Helm smoke (health, upsert, search, hybrid, snapshot, `/metrics`).
+
+### 2. Prove honesty (Track M milestone **M5** — blocking for Z-Column marketing)
+
+```bash
+cargo run -p dv-bench --release --bin topolsea-math-probe -- --json
+cargo run -p dv-bench --release --bin topolsea-math-localize -- --n=10000
+# then N=100000 if 10k looks close
+```
+
+Use `dv_bench::GateReport` against the [gates above](#go--no-go-gates-g1g2g3). **If any gate fails:** keep HNSW as default; publish HNSW (and IVF) ANN-Benchmarks; Z-Column stays explain/shard story. **If all pass:** only then claim Z-Column as a production ANN option and publish equal-memory curves.
+
+### 3. Publish the proof story (B9 completion)
+
+- Run `topolsea-ann-bench` (and `--compare`) on a fixed synthetic + optional SIFT/GIST corpus.  
+- Check in `docs/bench/` numbers with git SHA, hardware, and gate outcome.  
+- Prefer **honest HNSW numbers now**; Z-Column numbers only with τ reported.
+
+### 4. Phase D — production-standard hardening
+
+Full acceptance map: [`docs/PHASE_D.md`](PHASE_D.md). This is the gap between “staging RAG DB” and “SRE would bet a tenant on it.”
+
+---
+
+## Phases A–C and Track M (delivered — reference)
+
+Keep these as the historical acceptance maps; implementation docs live on the stacked branches until merged.
+
+| Phase | Exit (original) | Code PRs |
 |---|---|---|
-| A1 | **WAL + durable upsert** | Append-only log + CRC; periodic/background snapshot; crash recovery; `persist()` = snapshot, not the only durability path |
-| A2 | **Thread-safe collection** | Shared read path; writers locked/segmented; search does not need `&mut` (ledger off hot path or lock-free) |
-| A3 | **Service API** | `dv-server` (axum; tonic optional): collections CRUD, upsert, search, explain, health; API keys + TLS |
-| A4 | **Payload-aware filtered ANN** | Inverted indexes / bitmaps on metadata; constrain HNSW & Z-Column candidates — **not** `top_k×10` post-filter |
-| A5 | **Finish filter DSL** | Wire `ne` / `gt` / `gte` / `lt` / `lte` / `in` that `FilterOp` already names; document JSON dialect |
+| **A** | Staging single-node RAG DB | [#13](https://github.com/Team-Deepiri/deepiri-topolsea/pull/13) — WAL, concurrency, REST, filtered ANN, filter DSL |
+| **B** | RAG features + bench harness | [#14](https://github.com/Team-Deepiri/deepiri-topolsea/pull/14) — hybrid, segments, IVF/PQ, ann-bench |
+| **C** | Multi-node operable cut | [#15](https://github.com/Team-Deepiri/deepiri-topolsea/pull/15) — replicas, shard harden, metrics, tenants, snapshots |
+| **M** | Honest Z-Column path + gate harness | [#16](https://github.com/Team-Deepiri/deepiri-topolsea/pull/16) — prune, graph, budgets, conditional fallback |
 
-**Phase A exit:** single-node service you would run in staging for an internal RAG app with filtered search and crash-safe writes.
-
----
-
-## Phase B — Match RAG / product expectations
-
-| # | Item | Outcome |
-|---|---|---|
-| B6 | **Hybrid search** | Sparse/BM25 (or learned sparse) + dense fusion / RRF |
-| B7 | **Segmented storage + mmap** | Sealed segments, incremental flush, no full-corpus rewrite on every snapshot; optional DiskANN-class cold path |
-| B8 | **PQ / IVF** (or Faiss/usearch secondary) | Memory-bound larger-than-RAM / billion-scale path |
-| B9 | **ANN-Benchmarks + published numbers** | Honest HNSW vs Z-Column recall/QPS/memory; equal-memory curves; only claim “production ANN” if gates pass |
-
-**Phase B exit:** RAG-ready feature set + public, reproducible performance story.
+Prep checklist (historical): [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md).
 
 ---
 
-## Phase C — Operate like Milvus/Qdrant
-
-| # | Item | Outcome |
-|---|---|---|
-| C10 | **Replication + membership** | Primary-backup per shard first; Raft/consensus if multi-writer needed |
-| C11 | **Harden fractal shards** | Filters + metadata on remote path; warm shard processes; retries / timeouts / circuit breakers |
-| C12 | **Metrics + tracing** | Prometheus (QPS, p99, recall samples, WAL lag), OpenTelemetry |
-| C13 | **Auth / multi-tenant namespaces** + Docker/Helm | Deployable multi-tenant cut |
-| C14 | **Snapshots / backup API** | Operator-triggered backup/restore beyond raw file copy |
-
-**Phase C exit:** multi-node operable deployment an SRE would keep alive.
-
----
-
-## Suggested sequencing
+## Suggested sequencing (from here)
 
 ```
-Sprint 1  M1–M3 + A5 filter DSL + A2 concurrency sketch
-Sprint 2  A1 WAL + A3 axum skeleton (health/collections/search)
-Sprint 3  A4 filtered ANN + M4 compaction fix + M5 re-measure
-Sprint 4  If G1∧G2∧G3: B9 ANN-Benchmarks; else keep HNSW default
-Sprint 5+ B6–B8 RAG features, then C10–C14 ops
+Now       Merge #13→#16; staging smoke
+Week 1    M5 re-measure 10k/100k; GateReport; decide Z-Column marketing
+Week 1–2  Publish HNSW (± IVF) ANN-Bench numbers (B9); Z only if gates pass
+Week 2–4  Phase D1 soak/chaos + D4 dashboards
+Week 4–6  D2 gRPC/SDK + D3 replication SLAs
+Week 6+   D5–D8 as tenant demand requires
 ```
 
 ---
 
-## What “good” looks like vs peers (cheat sheet)
+## What “good” looks like vs peers (updated)
 
-| Capability | Peers do | Topolsea target phase |
-|---|---|---|
-| Durability (WAL) | Qdrant / Milvus | **A1** |
-| Network API + auth | All | **A3**, **C13** |
-| Filtered ANN | Payload indexes / prefilter | **A4–A5** |
-| Hybrid dense+sparse | Milvus / Weaviate / Qdrant | **B6** |
-| Horizontal scale | Shards + replicas | M4 shards today → **C10–C11** |
-| Observability | Prometheus / OTel | **C12** |
-| Packaging | Docker / Helm | **C13** |
-| Differentiator | — | Z-Column **explain**, fractal **partition keys**, DR rebuild — keep; speed claims only after gates |
+| Capability | Peers do | Topolsea now | Next |
+|---|---|---|---|
+| Durability (WAL) | Qdrant / Milvus | **A1 done** | External WAL / quorum (D3) |
+| Network API + auth | All | REST + keys/TLS (**A3/C13**) | gRPC + SDK parity (**D2**) |
+| Filtered ANN | Payload prefilter | **A4–A5 done** | Filtered SLO benches |
+| Hybrid dense+sparse | Milvus / Weaviate / Qdrant | **B6 done** | Rerank productization |
+| Horizontal scale | Shards + replicas | **C10–C11 done** | Quorum + coordinator HA (**D3/D8**) |
+| Observability | Prometheus / OTel | Prom + request ids (**C12**) | OTLP + alerts (**D4**) |
+| Packaging | Docker / Helm | **C13 done** | Hardened chart / multi-env |
+| Proof | Public benches | Harness (**B9**); gates open (**M5**) | Publish numbers; Z only if G123 |
+| Differentiator | — | Explain + fractal keys | Keep; speed claims only after gates |
 
 ---
 
 ## Defer (research, not the production bar)
 
 - Langlands / p-adic / ghost momentum (`DESIGN_PLAN.md`)  
-- M5 GPU batch projection / quantized scan  
-- M6 learned layer predictor — only after observe signal is honest (conditional fallback; stop always-setting `used_fallback_scan`)
+- GPU batch projection / CAGRA  
+- M6 learned layer predictor — only after M5 observe signal is clean and gates are understood  
+- Claiming Z-Column “production ANN” without G1∧G2∧G3  
 
 ---
 
@@ -167,7 +161,9 @@ Sprint 5+ B6–B8 RAG features, then C10–C14 ops
 |---|---|
 | [`docs/math/Z_COLUMN_APPLIED_MATH.md`](math/Z_COLUMN_APPLIED_MATH.md) | Discovery-mode math for shipping Z-Column |
 | [`docs/math/EXPERIMENT_PLAN.md`](math/EXPERIMENT_PLAN.md) | Measure matrix |
-| [`docs/math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md) | Latest go/no-go numbers |
-| [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md) | Crate-level acceptance for A + M |
-| [`docs/Z_COLUMN_PROTOCOL.md`](Z_COLUMN_PROTOCOL.md) | Index protocol + original gates |
-| [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) | Older checklist (many items superseded by this file) |
+| [`docs/math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md) | Latest go/no-go numbers (pre–M5 re-measure) |
+| [`docs/PHASE_A_PREP.md`](PHASE_A_PREP.md) | Original A + M crate checklist (archived / historical) |
+| [`docs/PHASE_D.md`](PHASE_D.md) | Production-standard hardening map |
+| [`docs/Z_COLUMN_PROTOCOL.md`](Z_COLUMN_PROTOCOL.md) | Index protocol + gates |
+| Phase A/B/C/M docs | On stacked PRs `#13`–`#16` until merged to `main` |
+| [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) | Older checklist (many items superseded) |

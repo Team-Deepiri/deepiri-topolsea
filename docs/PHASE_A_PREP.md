@@ -1,69 +1,55 @@
-# Phase A prep — become a real database
+# Phase A prep — become a real database (archived checklist)
 
-Prepared after applied-math measurement. Math track and DB track run **in parallel**; public ANN-Benchmarks (item 4 / Phase B.9) wait on bounded-touch GO.
+> **Status (2026-08-01):** Phase A–C and Track M are **implemented** in stacked PRs `#13`–`#16`.  
+> This file is an **archived crate-level checklist** kept for history.  
+> **Current priorities:** [`docs/NEXT_STEPS.md`](NEXT_STEPS.md) → merge stack → **M5** re-measure → publish benches → [`docs/PHASE_D.md`](PHASE_D.md).
 
-See the full vision and sequencing in [`docs/NEXT_STEPS.md`](NEXT_STEPS.md).
+Prepared after applied-math measurement. Math track and DB track ran **in parallel**; public ANN-Benchmarks (B9) still wait on bounded-touch GO (**G1∧G2∧G3**).
 
-## Track M — Math / index (unblock honest benches)
+---
 
-| ID | Work | Crate | Acceptance |
-|---|---|---|---|
-| M0 | Honest search knobs (done): no forced min-1 fallback; do not inflate beam `ef` with `coarse_pool` | `dv-index-zcolumn` | Pure beam τ≪1; ef/fallback knobs change measured τ |
-| M3 | Beam/column scan uses quantized coarse filter; FP32 only in rerank | `dv-index-zcolumn`, `dv-metrics` | Oracle-style B=8 column visit at τ&lt;0.5 with recall≥0.9 on 10k sphere |
-| M4 | Compaction promote **moves** id; split/rebalance hot columns (cut φ) | `compact.rs` | Σ heights = N; max height / mean height shrinks under load |
-| M-graph | Neighbor graph over nonempty **column centroids**; beam walks graph not grid rings | `dv-index-zcolumn` | Online column pick recall within 10% of oracle at same B (see `topolsea-math-localize`) |
-| M1 | Conditional fallback (only if heap &lt; k or score gap) | `dv-index-zcolumn` | `used_fallback_scan` true only when fired; revert rate measurable |
-| M2 | Hard `V_touch` budget in explain + search stop | `dv-index-zcolumn` | `candidate_pool ≤ budget` |
-| M5 | Re-run `topolsea-math-localize` + `topolsea-math-probe` | `dv-bench` | G1∧G2∧G3 on 10k; then 100k |
+## Archived — Track M checklist (all rows shipped in #16 except open M5 re-measure)
 
-Phase-2 result: **oracle whole-column expand cannot hit G1∧G3** (needs ~8 columns at τ≈0.68). M3+M4 are on the critical path; M-graph alone is not enough.
+| ID | Work | Crate | Acceptance | Code status |
+|---|---|---|---|---|
+| M0 | Honest search knobs: no forced min-1 fallback; do not inflate beam `ef` with `coarse_pool` | `dv-index-zcolumn` | Pure beam τ≪1; ef/fallback knobs change measured τ | **Done** (#16) |
+| M3 | Quantized coarse filter + **intra-column prune**; FP32 only in rerank | `dv-index-zcolumn`, `dv-metrics` | Tall-column visit with keep-m at τ&lt;0.5 path | **Done** (#16) |
+| M4 | Compaction promote **moves** id; split/rebalance hot columns | `compact.rs` | Σ heights = N; max/mean shrinks under load | **Done** (#16) |
+| M-graph | Neighbor graph over nonempty **column centroids** | `dv-index-zcolumn` | Cached graph + hop-limited walk | **Done** (#16) |
+| M1 | Conditional fallback (heap &lt; k or score gap) | `dv-index-zcolumn` | `used_fallback_scan` only when fired | **Done** (#16) |
+| M2 | Hard `V_touch` budget in explain + search stop | `dv-index-zcolumn` | `candidate_pool ≤ budget` | **Done** (#16) |
+| M5 | Re-run `topolsea-math-localize` + `topolsea-math-probe` | `dv-bench` | **G1∧G2∧G3** on 10k; then 100k | **Harness ready** — re-measure still open |
 
-## Track A — Phase A database must-haves
+Phase-2 result: **oracle whole-column expand cannot hit G1∧G3** (needs ~8 columns at τ≈0.68). M3+M4 remain critical; M-graph alone is not enough. See [`math/EXPERIMENT_RESULTS.md`](math/EXPERIMENT_RESULTS.md).
 
-### A1. WAL + durable upsert / auto-flush
-- **New:** `dv-storage` WAL segment (`wal.log` append records: Upsert/Delete/Meta) + CRC
-- **Flow:** mutate memory → append WAL → ack; background snapshot to `vectors.bin`/`index.bin`/`metadata.json` (atomic rename)
-- **Recovery:** replay WAL after last snapshot seq
-- **API:** `Collection::upsert` durable by default; `persist()` becomes snapshot trigger
-- **Tests:** crash mid-upsert (kill after WAL write); recover equals pre-crash state
+---
 
-### A2. Thread-safe collection
-- Split `ZColumnIndex` search to `&self` only (predictor already `RwLock`; access ledger → `Mutex`/`DashMap` or async queue)
-- `Database`/`Collection` behind `Arc<RwLock<_>>` or sharded locks
-- Stop requiring `&mut self` on `query` for ledger side effects
-- **Tests:** N reader threads + 1 writer; loom or stress test
+## Archived — Track A checklist (done in #13)
 
-### A3. Service API (REST + optional gRPC)
-- **New crate:** `dv-server` (axum): `/health`, `/v1/collections`, upsert, search, explain
-- Auth: API key header; TLS via rustls in deploy config
-- Replace toy `ShardQueryServer` raw TCP with shared axum app
-- Python: thin HTTP client path alongside PyO3 embedded client
-- **Tests:** HTTP integration smoke (create, upsert, search, health)
+### A1. WAL + durable upsert / auto-flush — **done (#13)**
+- `dv-storage` WAL (`wal.log` Upsert/Delete/Meta) + CRC  
+- mutate → append WAL → ack; background snapshot; replay after snapshot seq  
 
-### A4. Payload-aware filtered ANN
-- **New:** inverted index in `dv-metadata` (`field → value → Roaring bitmap of VectorId`)
-- Search: compute eligible set first; constrain Z-Column/HNSW candidate generation (not `top_k*10` post-filter)
-- HNSW: skip non-eligible neighbors; Z-Column: skip ids not in bitmap during `scan_column`
-- **Tests:** selectivity 1%, 10%, 50% — recall vs filtered flat GT
+### A2. Thread-safe collection — **done (#13)**
+- Search on `&self`; `CollectionHandle = Arc<RwLock<Collection>>`  
 
-### A5. Finish filter DSL
-- Wire `FilterOp::{Ne,Gt,Gte,Lt,Lte,In}` into `Filter` AST + `from_json`
-- Document JSON dialect (`$ne`, `$gt`, `$in`, …)
-- **Tests:** unit matrix per op; integration with A4
+### A3. Service API — **done (#13)**
+- `dv-server` (axum): health, collections, upsert, search, explain; API key + TLS  
 
-## Track B/C (stubs only — after A)
+### A4. Payload-aware filtered ANN — **done (#13)**
+- Roaring inverted index; constrain HNSW & Z-Column candidates  
 
-See [`docs/NEXT_STEPS.md`](NEXT_STEPS.md): hybrid BM25, mmap segments, PQ/IVF, ANN-Benchmarks datasets, replication, shard hardening, Prometheus, Helm, snapshots.
+### A5. Finish filter DSL — **done (#13)**
+- `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in`; `docs/FILTER_DIALECT.md`  
 
-## Suggested sequencing (2–3 sprints)
+---
 
-```
-Week 1: M3 (intra-column prune) + A5 (filters) + A2 sketch
-Week 2: M4 height-balance + A1 WAL + A3 axum skeleton
-Week 3: M-graph (close oracle gap) + A4 filtered ANN + M1/M2
-Week 4: M5 re-measure; public ANN-Benchmarks only if G1∧G2∧G3 pass
-```
+## Archived — Phases B/C (done in #14 / #15)
 
-## Non-goals this phase
-- Langlands / p-adic / ghost
-- GPU M5 / learned predictor M6 until observe signal fixed (M1)
+Hybrid BM25, mmap segments, IVF/PQ, ann-bench harness; replication, shard harden, Prometheus, Helm, snapshots. See [`NEXT_STEPS.md`](NEXT_STEPS.md) and [`PHASE_D.md`](PHASE_D.md) for what remains toward peer-grade production.
+
+## Non-goals (unchanged)
+
+- Langlands / p-adic / ghost  
+- GPU / learned predictor until M5 gates are understood  
+- Marketing Z-Column as production ANN without G1∧G2∧G3  
