@@ -8,6 +8,8 @@ pub enum IndexKind {
     Hnsw,
     Flat,
     ZColumn,
+    /// Inverted file + optional product quantization (memory-bound path).
+    Ivf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +113,43 @@ mod tests {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IvfConfig {
+    /// Number of coarse centroids / inverted lists.
+    pub nlist: usize,
+    /// Lists probed at search time.
+    pub nprobe: usize,
+    /// Product-quantization subspaces (`None` = store full vectors in lists).
+    #[serde(default)]
+    pub pq_m: Option<usize>,
+    pub seed: u64,
+    /// Drop full-precision vectors from RAM after they are sealed to segments
+    /// (PQ memory-bound path). Search uses codes; `get_vector` reconstructs.
+    #[serde(default)]
+    pub memory_bound: bool,
+}
+
+impl Default for IvfConfig {
+    fn default() -> Self {
+        Self {
+            nlist: 64,
+            nprobe: 8,
+            pq_m: None,
+            seed: 42,
+            memory_bound: false,
+        }
+    }
+}
+
+impl IvfConfig {
+    /// Convenience: IVF + PQ with memory-bound raw drop enabled.
+    pub fn with_pq(mut self, pq_m: usize) -> Self {
+        self.pq_m = Some(pq_m);
+        self.memory_bound = true;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionConfig {
     pub name: String,
     pub dimension: usize,
@@ -119,6 +158,8 @@ pub struct CollectionConfig {
     pub hnsw: HnswConfig,
     #[serde(default)]
     pub zcolumn: ZColumnConfig,
+    #[serde(default)]
+    pub ivf: IvfConfig,
 }
 
 impl CollectionConfig {
@@ -130,6 +171,7 @@ impl CollectionConfig {
             index_kind: IndexKind::Hnsw,
             hnsw: HnswConfig::default(),
             zcolumn: ZColumnConfig::default(),
+            ivf: IvfConfig::default(),
         }
     }
 
@@ -140,6 +182,11 @@ impl CollectionConfig {
 
     pub fn with_zcolumn_index(mut self) -> Self {
         self.index_kind = IndexKind::ZColumn;
+        self
+    }
+
+    pub fn with_ivf_index(mut self) -> Self {
+        self.index_kind = IndexKind::Ivf;
         self
     }
 }

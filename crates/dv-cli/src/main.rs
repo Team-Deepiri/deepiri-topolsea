@@ -125,6 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let index_kind = match index.to_lowercase().as_str() {
                 "flat" => IndexKind::Flat,
                 "zcolumn" => IndexKind::ZColumn,
+                "ivf" | "ivfpq" => IndexKind::Ivf,
                 _ => IndexKind::Hnsw,
             };
             let mut config = dv_types::CollectionConfig::new(name.clone(), dimension, metric);
@@ -133,6 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config = config.with_flat_index();
             } else if index_kind == IndexKind::ZColumn {
                 config = config.with_zcolumn_index();
+            } else if index_kind == IndexKind::Ivf {
+                config = config.with_ivf_index();
             }
             db.create_collection(config)?;
             println!(

@@ -1,0 +1,12 @@
+{
+  "dataset": "synthetic_2k_d32",
+  "index": "Hnsw",
+  "metric": "l2",
+  "n_base": 2000,
+  "n_queries": 50,
+  "top_k": 10,
+  "recall_at_k": 1.0,
+  "qps": 30281.557925592155,
+  "build_secs": 0.33308695,
+  "notes": "Product-default ANN path"
+}

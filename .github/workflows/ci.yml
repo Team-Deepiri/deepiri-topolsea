@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +32,9 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Synthetic ANN bench (B9)
+        run: cargo run -p dv-bench --release --bin topolsea-ann-bench -- --compare --top-k 10
 
   python:
     runs-on: ubuntu-latest

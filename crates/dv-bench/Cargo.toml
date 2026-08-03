@@ -10,8 +10,10 @@ path = "src/lib.rs"
 
 [dependencies]
 criterion = { workspace = true }
+clap = { workspace = true }
 dv-index-flat = { path = "../dv-index-flat" }
 dv-index-hnsw = { path = "../dv-index-hnsw" }
+dv-index-ivf = { path = "../dv-index-ivf" }
 dv-index-zcolumn = { path = "../dv-index-zcolumn" }
 dv-index-api = { path = "../dv-index-api" }
 dv-types = { path = "../dv-types" }
@@ -22,6 +24,10 @@ serde_json = { workspace = true }
 [[bin]]
 name = "topolsea-prove"
 path = "src/bin/prove.rs"
+
+[[bin]]
+name = "topolsea-ann-bench"
+path = "src/bin/ann_bench.rs"
 
 [[bench]]
 name = "index_bench"

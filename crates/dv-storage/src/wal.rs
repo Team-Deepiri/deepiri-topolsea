@@ -18,6 +18,9 @@ pub enum WalRecord {
         internal_id: u64,
         vector: Vec<f32>,
         metadata: Value,
+        /// Optional document text for BM25 / hybrid search (B6).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
     Delete {
         external_id: String,
@@ -201,6 +204,7 @@ mod tests {
                 internal_id: 0,
                 vector: vec![1.0, 2.0],
                 metadata: json!({"k": 1}),
+                text: None,
             })
             .unwrap();
         assert_eq!(seq, 1);

@@ -2,6 +2,7 @@ mod column_format;
 mod column_segment;
 mod format;
 mod segment;
+mod segment_store;
 mod shard_format;
 mod store;
 mod wal;
@@ -12,6 +13,7 @@ pub use column_format::{
 pub use column_segment::{ColumnCellRecord, ColumnSegment};
 pub use format::{FileHeader, MAGIC, VERSION};
 pub use segment::VectorSegment;
+pub use segment_store::{SealedSegmentMeta, SegmentManifest, SegmentStore};
 pub use shard_format::{
     parse_physical_shard_name, ShardClusterConfig, ShardManifest, ShardRoutingIndex,
 };
