@@ -119,7 +119,7 @@ impl IvfIndex {
         if all.len() <= cap {
             return all;
         }
-        let mut rng = StdRng::seed_from_u64(seed.wrapping_add(0x51F1_ca11));
+        let mut rng = StdRng::seed_from_u64(seed.wrapping_add(0x51f1_ca11));
         all.shuffle(&mut rng);
         all.truncate(cap);
         all

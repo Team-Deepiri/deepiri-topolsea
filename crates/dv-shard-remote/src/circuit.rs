@@ -89,11 +89,7 @@ impl CircuitBreakerRegistry {
         b.failures = b.failures.saturating_add(1);
         if b.failures >= self.failure_threshold || b.state == State::HalfOpen {
             if b.state != State::Open {
-                tracing::warn!(
-                    endpoint,
-                    failures = b.failures,
-                    "circuit open"
-                );
+                tracing::warn!(endpoint, failures = b.failures, "circuit open");
             }
             b.state = State::Open;
             b.opened_at = Some(Instant::now());

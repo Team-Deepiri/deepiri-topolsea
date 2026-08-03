@@ -39,7 +39,10 @@ pub fn router(state: AppState) -> Router {
             get(get_collection).delete(delete_collection),
         )
         .route("/v1/collections/:name/upsert", put(upsert))
-        .route("/v1/collections/:name/points", put(upsert).delete(delete_points))
+        .route(
+            "/v1/collections/:name/points",
+            put(upsert).delete(delete_points),
+        )
         .route("/v1/collections/:name/search", post(search))
         .route("/v1/collections/:name/hybrid", post(hybrid_search))
         .route("/v1/collections/:name/sparse", post(sparse_search))
@@ -64,10 +67,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/cluster/heartbeat", post(cluster_heartbeat))
         .route("/v1/snapshots", get(list_snapshots).post(create_snapshot))
-        .route("/v1/snapshots/:name", get(get_snapshot_meta).delete(delete_snapshot))
+        .route(
+            "/v1/snapshots/:name",
+            get(get_snapshot_meta).delete(delete_snapshot),
+        )
         .route("/v1/snapshots/:name/restore", post(restore_snapshot))
         .route("/v1/shards/:logical/replicas", post(add_replica))
-        .route("/v1/shards/:logical/replica-policy", put(set_replica_policy))
+        .route(
+            "/v1/shards/:logical/replica-policy",
+            put(set_replica_policy),
+        )
         .route(QUERY_PATH, post(shard_query))
         .route(REPLICATE_UPSERT_PATH, post(replicate_upsert))
         .route(REPLICATE_DELETE_PATH, post(replicate_delete))
@@ -217,9 +226,9 @@ fn default_index() -> String {
 fn build_collection_config(
     ns: &str,
     body: &CreateCollectionBody,
-) -> Result<CollectionConfig, Response> {
-    let metric =
-        DistanceMetric::from_str(&body.metric).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+) -> Result<CollectionConfig, Box<Response>> {
+    let metric = DistanceMetric::from_str(&body.metric)
+        .map_err(|e| Box::new(err(StatusCode::BAD_REQUEST, e)))?;
     let index_kind = match body.index.to_lowercase().as_str() {
         "flat" => IndexKind::Flat,
         "zcolumn" => IndexKind::ZColumn,
@@ -265,7 +274,7 @@ async fn create_collection(
     Json(body): Json<CreateCollectionBody>,
 ) -> Result<impl IntoResponse, Response> {
     let ns = require_auth(&headers, &state)?;
-    let config = build_collection_config(&ns, &body)?;
+    let config = build_collection_config(&ns, &body).map_err(|e| *e)?;
     state
         .db
         .write()
@@ -1059,7 +1068,7 @@ async fn create_collection_ns(
     Json(body): Json<CreateCollectionBody>,
 ) -> Result<impl IntoResponse, Response> {
     let ns = require_ns(&headers, &state, &ns)?;
-    let config = build_collection_config(&ns, &body)?;
+    let config = build_collection_config(&ns, &body).map_err(|e| *e)?;
     state
         .db
         .write()

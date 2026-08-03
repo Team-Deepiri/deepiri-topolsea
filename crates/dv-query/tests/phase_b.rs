@@ -254,8 +254,14 @@ fn hybrid_filter_and_prefetch_rrf_vs_linear() {
         )
         .unwrap();
     let ids: Vec<_> = hits.iter().filter_map(|h| h.id.clone()).collect();
-    assert!(!ids.contains(&"drop".to_string()), "filter should drop spam: {ids:?}");
-    assert!(ids.contains(&"keep".to_string()), "expected keep in {ids:?}");
+    assert!(
+        !ids.contains(&"drop".to_string()),
+        "filter should drop spam: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"keep".to_string()),
+        "expected keep in {ids:?}"
+    );
 
     let mut linear = HybridOptions::new(1, 16);
     linear.fusion = FusionMethod::Linear;
