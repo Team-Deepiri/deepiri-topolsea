@@ -79,6 +79,38 @@ impl ColumnStack {
         }
     }
 
+    /// Recompute centroid from live FP32 vectors (M4 after move/split).
+    pub fn rebuild_centroid(
+        &mut self,
+        vectors: &std::collections::HashMap<VectorId, Vec<f32>>,
+        dimension: usize,
+    ) {
+        if self.ids.is_empty() {
+            self.centroid = vec![0.0; dimension];
+            return;
+        }
+        let mut acc = vec![0.0f32; dimension];
+        let mut n = 0.0f32;
+        for id in &self.ids {
+            let Some(v) = vectors.get(id) else {
+                continue;
+            };
+            if v.len() != dimension {
+                continue;
+            }
+            for (a, &x) in acc.iter_mut().zip(v.iter()) {
+                *a += x;
+            }
+            n += 1.0;
+        }
+        if n > 0.0 {
+            for a in &mut acc {
+                *a /= n;
+            }
+            self.centroid = acc;
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }

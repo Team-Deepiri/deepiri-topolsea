@@ -81,6 +81,13 @@ impl TopKHeap {
         self.heap.is_empty()
     }
 
+    pub fn best_distance(&self) -> Option<f32> {
+        self.heap
+            .iter()
+            .map(|c| c.distance)
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    }
+
     pub fn farthest_distance(&self) -> Option<f32> {
         self.heap.peek().map(|c| c.distance)
     }
