@@ -177,6 +177,7 @@ fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<String, Respons
 /// When no global key is configured the server is unauthenticated by choice,
 /// and these routes stay open exactly like every other route. Only deployments
 /// that opted into a key change behaviour.
+#[allow(clippy::result_large_err)]
 fn require_internal_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
     let Some(expected) = state.api_key.as_deref() else {
         return Ok(());
