@@ -1,4 +1,4 @@
-use crate::auth::authorize;
+use crate::auth::{authorize, extract_api_key};
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
@@ -164,6 +164,27 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 #[allow(clippy::result_large_err)]
 fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<String, Response> {
     authorize(headers, state.api_key.as_deref(), &state.tenant_keys)
+}
+
+/// Authorisation for the node-to-node endpoints under `/topolsea/v1/`.
+///
+/// Deliberately stricter than [`require_auth`]: it accepts the global API key
+/// only, never a tenant key. The replication and shard handlers address
+/// collections by their fully-qualified physical name and do no namespace
+/// scoping, so a tenant credential must not reach them -- that would turn
+/// tenant isolation into a formality.
+///
+/// When no global key is configured the server is unauthenticated by choice,
+/// and these routes stay open exactly like every other route. Only deployments
+/// that opted into a key change behaviour.
+fn require_internal_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
+    let Some(expected) = state.api_key.as_deref() else {
+        return Ok(());
+    };
+    match extract_api_key(headers) {
+        Some(key) if key == expected => Ok(()),
+        _ => Err(err(StatusCode::UNAUTHORIZED, "invalid or missing API key")),
+    }
 }
 
 fn qname(ns: &str, name: &str) -> String {
@@ -628,8 +649,10 @@ async fn persist_all(
 /// Compatibility endpoint for fractal shard fan-out clients.
 async fn shard_query(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<ShardQueryRequest>,
 ) -> Result<impl IntoResponse, Response> {
+    require_internal_auth(&headers, &state)?;
     let name = state.shard_collection.as_ref().ok_or_else(|| {
         err(
             StatusCode::BAD_REQUEST,
@@ -893,8 +916,10 @@ async fn set_replica_policy(
 
 async fn replicate_upsert(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<ReplicateUpsertRequest>,
 ) -> Result<impl IntoResponse, Response> {
+    require_internal_auth(&headers, &state)?;
     if body.ids.len() != body.vectors.len() {
         return Err(err(StatusCode::BAD_REQUEST, "ids/vectors length mismatch"));
     }
@@ -926,8 +951,10 @@ async fn replicate_upsert(
 
 async fn replicate_delete(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<ReplicateDeleteRequest>,
 ) -> Result<impl IntoResponse, Response> {
+    require_internal_auth(&headers, &state)?;
     let mut db = state.db.write();
     let col = db
         .get_collection(&body.collection)
@@ -953,7 +980,10 @@ async fn replicate_delete(
     Ok(Json(ReplicateDeleteResponse { deleted }))
 }
 
-async fn shard_health(State(state): State<AppState>) -> impl IntoResponse {
+async fn shard_health(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = require_internal_auth(&headers, &state) {
+        return e;
+    }
     match &state.shard_collection {
         Some(name) => {
             let mut db = state.db.write();

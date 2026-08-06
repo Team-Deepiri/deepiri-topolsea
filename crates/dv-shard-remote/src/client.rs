@@ -16,6 +16,12 @@ pub struct ShardQueryClient {
     timeout_ms: u64,
     max_retries: u32,
     breaker: CircuitBreakerRegistry,
+    /// Credential presented to the peer's `/topolsea/v1/` endpoints.
+    ///
+    /// Defaults to `TOPOLSEA_API_KEY`, the same variable `topolsea-server`
+    /// reads for `--api-key`, so a cluster whose nodes already share that
+    /// variable authenticates without extra configuration.
+    api_key: Option<String>,
 }
 
 impl Default for ShardQueryClient {
@@ -30,7 +36,16 @@ impl ShardQueryClient {
             timeout_ms,
             max_retries: 2,
             breaker: CircuitBreakerRegistry::default(),
+            api_key: std::env::var("TOPOLSEA_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty()),
         }
+    }
+
+    /// Override the credential sent to peers. Passing `None` sends none.
+    pub fn with_api_key(mut self, api_key: Option<String>) -> Self {
+        self.api_key = api_key;
+        self
     }
 
     pub fn with_retries(mut self, max_retries: u32) -> Self {
@@ -90,8 +105,11 @@ impl ShardQueryClient {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_millis(self.timeout_ms.min(5_000)))
             .build();
-        let response = agent
-            .get(&url)
+        let mut req = agent.get(&url);
+        if let Some(key) = &self.api_key {
+            req = req.set("x-api-key", key);
+        }
+        let response = req
             .call()
             .map_err(|e| ShardRemoteError::Transport(e.to_string()))?;
         let status = response.status();
@@ -173,9 +191,11 @@ impl ShardQueryClient {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_millis(self.timeout_ms))
             .build();
-        let response = agent
-            .post(url)
-            .set("Content-Type", "application/json")
+        let mut req = agent.post(url).set("Content-Type", "application/json");
+        if let Some(key) = &self.api_key {
+            req = req.set("x-api-key", key);
+        }
+        let response = req
             .send_json(body)
             .map_err(|e| ShardRemoteError::Transport(e.to_string()))?;
 
