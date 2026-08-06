@@ -170,6 +170,31 @@ fn qname(ns: &str, name: &str) -> String {
     qualify_collection(ns, name)
 }
 
+/// Largest `top_k` / `ef` a request may name.
+///
+/// Both values size per-query working memory, so leaving them unbounded lets a
+/// caller decide how much the server allocates. The ceiling sits far above any
+/// real query -- the defaults are `top_k` 10 and `ef` 64 -- and is enforced on
+/// the shard fan-out path as well as the authenticated one, because
+/// `shard_query` takes the same values and does not require a key.
+const MAX_QUERY_K: usize = 65_536;
+
+fn check_query_k(top_k: usize, ef: usize) -> Result<(), Response> {
+    if top_k > MAX_QUERY_K {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("top_k {top_k} exceeds maximum {MAX_QUERY_K}"),
+        ));
+    }
+    if ef > MAX_QUERY_K {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("ef {ef} exceeds maximum {MAX_QUERY_K}"),
+        ));
+    }
+    Ok(())
+}
+
 fn err(status: StatusCode, msg: impl ToString) -> Response {
     (status, Json(json!({"error": msg.to_string()}))).into_response()
 }
@@ -411,6 +436,7 @@ async fn search(
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
+    check_query_k(body.top_k, ef)?;
     let results = col
         .read()
         .query(&body.vector, body.top_k, filter.as_ref(), ef)
@@ -650,6 +676,7 @@ async fn shard_query(
     let col = db
         .get_collection(name)
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(req.top_k, req.ef)?;
     let results = col
         .read()
         .query(&req.vector, req.top_k, filter.as_ref(), req.ef)
@@ -1161,10 +1188,11 @@ async fn search_ns(
         .map(Filter::from_json)
         .transpose()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-    let mut db = state.db.write();
-    let col = db
-        .get_collection(&qname(&ns, &name))
-        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let col = {
+        let mut db = state.db.write();
+        db.get_collection(&qname(&ns, &name))
+            .map_err(|e| err(StatusCode::NOT_FOUND, e))?
+    };
     let ef = body.nprobe.unwrap_or(body.ef);
     let results = col
         .read()
