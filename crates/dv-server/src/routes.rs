@@ -179,6 +179,7 @@ fn qname(ns: &str, name: &str) -> String {
 /// `shard_query` takes the same values and does not require a key.
 const MAX_QUERY_K: usize = 65_536;
 
+#[allow(clippy::result_large_err)]
 fn check_query_k(top_k: usize, ef: usize) -> Result<(), Response> {
     if top_k > MAX_QUERY_K {
         return Err(err(
@@ -1188,11 +1189,10 @@ async fn search_ns(
         .map(Filter::from_json)
         .transpose()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-    let col = {
-        let mut db = state.db.write();
-        db.get_collection(&qname(&ns, &name))
-            .map_err(|e| err(StatusCode::NOT_FOUND, e))?
-    };
+    let mut db = state.db.write();
+    let col = db
+        .get_collection(&qname(&ns, &name))
+        .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
     let results = col
         .read()
