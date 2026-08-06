@@ -31,10 +31,24 @@ pub struct TopKHeap {
     k: usize,
 }
 
+/// Upper bound on the capacity reserved up front by [`TopKHeap::new`].
+///
+/// `push` never lets the heap exceed `k`, so reserving `k + 1` eagerly is only
+/// an optimisation -- but it made `k` a direct allocation lever. `k` reaches
+/// this constructor straight from a request body (`top_k`/`ef` on the search
+/// endpoints), so a single caller could name a `k` whose reservation cannot be
+/// satisfied. A failed allocation is not a catchable panic: Rust calls
+/// `handle_alloc_error`, which aborts the process.
+///
+/// Small `k` -- every realistic query -- still gets its exact reservation. A
+/// large one now grows on demand, so the cost tracks the elements that actually
+/// arrive rather than the number requested.
+const MAX_RESERVE: usize = 1024;
+
 impl TopKHeap {
     pub fn new(k: usize) -> Self {
         Self {
-            heap: BinaryHeap::with_capacity(k + 1),
+            heap: BinaryHeap::with_capacity(k.saturating_add(1).min(MAX_RESERVE)),
             k,
         }
     }
@@ -96,6 +110,36 @@ impl TopKHeap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absurd_k_does_not_abort_the_process() {
+        // `usize::MAX` here would have asked the allocator for 16 exabytes.
+        // Reaching the assertions at all is the point: a failed reservation
+        // aborts, so a regression kills the test binary rather than failing it.
+        let heap = TopKHeap::new(usize::MAX);
+        assert_eq!(heap.capacity(), usize::MAX, "logical capacity is still k");
+        assert!(heap.is_empty());
+
+        let mut heap = TopKHeap::new(1_000_000_000_000_000);
+        heap.push(Candidate {
+            id: VectorId(7),
+            distance: 1.5,
+        });
+        let out = heap.into_sorted_vec();
+        assert_eq!(
+            out.len(),
+            1,
+            "a huge k still accepts and returns candidates"
+        );
+        assert_eq!(out[0].id.raw(), 7);
+    }
+
+    #[test]
+    fn reserve_is_exact_for_realistic_k() {
+        // The optimisation is preserved where it matters.
+        let heap = TopKHeap::new(10);
+        assert!(heap.heap.capacity() >= 11);
+    }
 
     #[test]
     fn keeps_k_smallest() {
