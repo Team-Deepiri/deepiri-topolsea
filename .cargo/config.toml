@@ -1,0 +1,14 @@
+# PyO3 cdylibs deliberately leave the CPython symbols undefined and resolve them
+# from the interpreter at import time. ELF permits that by default; Mach-O does
+# not, so on macOS the linker fails with "Undefined symbols for architecture
+# arm64: _PyBaseObject_Type, _PyBool_Type, ...". These flags restore the same
+# behaviour Linux gives for free.
+#
+# Without this, `cargo build --workspace` -- the setup command in
+# CONTRIBUTING.md -- cannot succeed on any macOS machine. CI is ubuntu-only, so
+# it never surfaces there.
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
