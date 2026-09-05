@@ -510,6 +510,7 @@ async fn hybrid_search(
         .map(Filter::from_json)
         .transpose()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    check_query_k(body.top_k, body.ef)?;
     let mut opts = HybridOptions::new(body.top_k, body.ef);
     opts.rrf_k = body.rrf_k;
     opts.dense_weight = body.dense_weight;
@@ -573,6 +574,7 @@ async fn sparse_search(
     let col = db
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(body.top_k, 0)?;
     let results = col
         .read()
         .query_sparse(&body.text, body.top_k, filter.as_ref())
@@ -606,6 +608,7 @@ async fn explain(
     let col = db
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(body.top_k, body.ef)?;
     let (results, explain) = col
         .read()
         .query_explain(&body.vector, body.top_k, filter.as_ref(), body.ef)
@@ -1225,6 +1228,7 @@ async fn search_ns(
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
+    check_query_k(body.top_k, ef)?;
     let results = col
         .read()
         .query(&body.vector, body.top_k, filter.as_ref(), ef)
