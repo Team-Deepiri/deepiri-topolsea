@@ -102,6 +102,12 @@ async fn absurd_top_k_is_rejected_on_every_query_endpoint() {
             "/v1/collections/demo/explain",
             json!({"vector":[1.0,0.0],"top_k":ABSURD_K}),
         ),
+        // `prefetch` overrides the dense-side k inside HybridOptions, so it is a
+        // lever in its own right even when top_k and ef are sane.
+        (
+            "/v1/collections/demo/hybrid",
+            json!({"vector":[1.0,0.0],"text":"x","top_k":5,"prefetch":ABSURD_K}),
+        ),
     ];
 
     for (uri, body) in cases {
@@ -142,11 +148,11 @@ async fn absurd_ef_is_rejected_including_via_the_nprobe_alias() {
 }
 
 #[tokio::test]
-async fn the_documented_maximum_is_still_accepted() {
+async fn the_boundary_is_exact() {
     let app = app_with_demo_collection().await;
 
-    // 65_536 is the limit, not one past it: the guard must reject only above it,
-    // otherwise a legal query starts failing.
+    // Both sides. Accepting 65_536 is what catches a `>` -> `>=` slip; rejecting
+    // 65_537 is what catches the guard being loosened or removed.
     let status = post(
         &app,
         "/v1/collections/demo/search",
@@ -156,5 +162,56 @@ async fn the_documented_maximum_is_still_accepted() {
     assert!(
         status.is_success(),
         "top_k at the documented maximum was rejected with {status}"
+    );
+
+    let status = post(
+        &app,
+        "/v1/collections/demo/search",
+        json!({"vector":[1.0,0.0],"top_k":65_537}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "top_k one past the maximum was accepted"
+    );
+}
+
+/// `shard_query` is the fan-out route the bound was originally written for, and
+/// it is reachable without a key on a keyless deployment. It is served from a
+/// router configured with a shard collection, so it needs its own harness.
+#[tokio::test]
+async fn absurd_top_k_is_rejected_on_the_shard_fanout() {
+    let dir = tempdir().unwrap();
+    let path = dir.keep();
+    let db = Database::open(&path).unwrap().into_shared();
+    let app = router(AppState::new(db, None).with_shard_collection("demo"));
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/collections")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"name":"demo","dimension":2,"metric":"l2","index":"flat"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let status = post(
+        &app,
+        "/topolsea/v1/shard/query",
+        json!({"vector":[1.0,0.0],"top_k":ABSURD_K,"ef":64}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "shard fan-out accepted an absurd top_k"
     );
 }

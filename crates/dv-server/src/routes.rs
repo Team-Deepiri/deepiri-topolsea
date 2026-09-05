@@ -196,12 +196,15 @@ fn qname(ns: &str, name: &str) -> String {
 ///
 /// Both values size per-query working memory, so leaving them unbounded lets a
 /// caller decide how much the server allocates. The ceiling sits far above any
-/// real query -- the defaults are `top_k` 10 and `ef` 64 -- and is enforced on
-/// the shard fan-out path as well as the authenticated one, because
-/// `shard_query` takes the same values and does not require a key.
+/// real query -- the defaults are `top_k` 10 and `ef` 64.
+///
+/// Enforced on every route that accepts a caller-supplied `top_k`, `ef`,
+/// `nprobe` or `prefetch`, including the `shard_query` fan-out. `shard_query`
+/// is gated by the global API key when one is configured (`require_internal_auth`),
+/// and open on a keyless deployment -- so on a keyless node this bound is the
+/// only thing standing between an unauthenticated request and the allocator.
 const MAX_QUERY_K: usize = 65_536;
 
-#[allow(clippy::result_large_err)]
 fn check_query_k(top_k: usize, ef: usize) -> Result<(), Response> {
     if top_k > MAX_QUERY_K {
         return Err(err(
@@ -511,6 +514,11 @@ async fn hybrid_search(
         .transpose()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     check_query_k(body.top_k, body.ef)?;
+    // `prefetch` overrides the dense-side k inside HybridOptions::prefetch_k(),
+    // so it is the same allocation lever as top_k and needs the same ceiling.
+    if let Some(prefetch) = body.prefetch {
+        check_query_k(prefetch, 0)?;
+    }
     let mut opts = HybridOptions::new(body.top_k, body.ef);
     opts.rrf_k = body.rrf_k;
     opts.dense_weight = body.dense_weight;
