@@ -161,7 +161,6 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<String, Response> {
     authorize(headers, state.api_key.as_deref(), &state.tenant_keys)
 }
@@ -177,7 +176,6 @@ fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<String, Respons
 /// When no global key is configured the server is unauthenticated by choice,
 /// and these routes stay open exactly like every other route. Only deployments
 /// that opted into a key change behaviour.
-#[allow(clippy::result_large_err)]
 fn require_internal_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
     let Some(expected) = state.api_key.as_deref() else {
         return Ok(());
@@ -1061,7 +1059,6 @@ async fn delete_points(
 ///
 /// Tenant-scoped keys are sticky (path must equal the tenant ns). Global-key /
 /// open auth may use any path namespace.
-#[allow(clippy::result_large_err)]
 fn require_ns(headers: &HeaderMap, state: &AppState, path_ns: &str) -> Result<String, Response> {
     let auth_ns = require_auth(headers, state)?;
     let path_ns = dv_query::normalize_namespace(path_ns);
