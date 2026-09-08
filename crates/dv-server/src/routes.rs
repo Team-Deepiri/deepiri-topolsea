@@ -190,6 +190,35 @@ fn qname(ns: &str, name: &str) -> String {
     qualify_collection(ns, name)
 }
 
+/// Largest `top_k` / `ef` a request may name.
+///
+/// Both values size per-query working memory, so leaving them unbounded lets a
+/// caller decide how much the server allocates. The ceiling sits far above any
+/// real query -- the defaults are `top_k` 10 and `ef` 64.
+///
+/// Enforced on every route that accepts a caller-supplied `top_k`, `ef`,
+/// `nprobe` or `prefetch`, including the `shard_query` fan-out. `shard_query`
+/// is gated by the global API key when one is configured (`require_internal_auth`),
+/// and open on a keyless deployment -- so on a keyless node this bound is the
+/// only thing standing between an unauthenticated request and the allocator.
+const MAX_QUERY_K: usize = 65_536;
+
+fn check_query_k(top_k: usize, ef: usize) -> Result<(), Response> {
+    if top_k > MAX_QUERY_K {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("top_k {top_k} exceeds maximum {MAX_QUERY_K}"),
+        ));
+    }
+    if ef > MAX_QUERY_K {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("ef {ef} exceeds maximum {MAX_QUERY_K}"),
+        ));
+    }
+    Ok(())
+}
+
 fn err(status: StatusCode, msg: impl ToString) -> Response {
     (status, Json(json!({"error": msg.to_string()}))).into_response()
 }
@@ -431,6 +460,7 @@ async fn search(
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
+    check_query_k(body.top_k, ef)?;
     let results = col
         .read()
         .query(&body.vector, body.top_k, filter.as_ref(), ef)
@@ -481,6 +511,12 @@ async fn hybrid_search(
         .map(Filter::from_json)
         .transpose()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    check_query_k(body.top_k, body.ef)?;
+    // `prefetch` overrides the dense-side k inside HybridOptions::prefetch_k(),
+    // so it is the same allocation lever as top_k and needs the same ceiling.
+    if let Some(prefetch) = body.prefetch {
+        check_query_k(prefetch, 0)?;
+    }
     let mut opts = HybridOptions::new(body.top_k, body.ef);
     opts.rrf_k = body.rrf_k;
     opts.dense_weight = body.dense_weight;
@@ -544,6 +580,7 @@ async fn sparse_search(
     let col = db
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(body.top_k, 0)?;
     let results = col
         .read()
         .query_sparse(&body.text, body.top_k, filter.as_ref())
@@ -577,6 +614,7 @@ async fn explain(
     let col = db
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(body.top_k, body.ef)?;
     let (results, explain) = col
         .read()
         .query_explain(&body.vector, body.top_k, filter.as_ref(), body.ef)
@@ -672,6 +710,7 @@ async fn shard_query(
     let col = db
         .get_collection(name)
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(req.top_k, req.ef)?;
     let results = col
         .read()
         .query(&req.vector, req.top_k, filter.as_ref(), req.ef)
@@ -1194,6 +1233,7 @@ async fn search_ns(
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
+    check_query_k(body.top_k, ef)?;
     let results = col
         .read()
         .query(&body.vector, body.top_k, filter.as_ref(), ef)
