@@ -1,3 +1,11 @@
+// Handlers in this module return `axum::response::Response` as their error
+// type so `IntoResponse` error bodies (JSON, status codes, headers) can be
+// built directly at the call site. Clippy's `result_large_err` flags this
+// because `Response` is larger than its 128-byte threshold, but boxing it
+// would just move the allocation elsewhere and complicate every `?` call
+// site for no behavioral benefit here.
+#![allow(clippy::result_large_err)]
+
 use crate::auth::{authorize, extract_api_key};
 use crate::state::AppState;
 use axum::body::Body;
