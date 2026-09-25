@@ -19,7 +19,6 @@ pub fn extract_api_key(headers: &HeaderMap) -> Option<String> {
         })
 }
 
-#[allow(clippy::result_large_err)]
 pub fn check_api_key(headers: &HeaderMap, expected: Option<&str>) -> Result<(), Response> {
     let Some(expected) = expected else {
         return Ok(());
@@ -41,7 +40,6 @@ pub fn check_api_key(headers: &HeaderMap, expected: Option<&str>) -> Result<(), 
 /// 2. Key matches a tenant key → that tenant namespace (header ignored)
 /// 3. Key matches the global API key → `x-namespace` or `default`
 /// 4. Otherwise → 401
-#[allow(clippy::result_large_err)]
 pub fn authorize(
     headers: &HeaderMap,
     global_key: Option<&str>,
