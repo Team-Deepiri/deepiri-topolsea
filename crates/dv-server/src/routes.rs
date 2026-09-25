@@ -1,3 +1,11 @@
+// Handlers in this module return `axum::response::Response` as their error
+// type so `IntoResponse` error bodies (JSON, status codes, headers) can be
+// built directly at the call site. Clippy's `result_large_err` flags this
+// because `Response` is larger than its 128-byte threshold, but boxing it
+// would just move the allocation elsewhere and complicate every `?` call
+// site for no behavioral benefit here.
+#![allow(clippy::result_large_err)]
+
 use crate::auth::{authorize, extract_api_key};
 use crate::state::AppState;
 use axum::body::Body;
@@ -161,7 +169,6 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<String, Response> {
     authorize(headers, state.api_key.as_deref(), &state.tenant_keys)
 }
@@ -177,7 +184,6 @@ fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<String, Respons
 /// When no global key is configured the server is unauthenticated by choice,
 /// and these routes stay open exactly like every other route. Only deployments
 /// that opted into a key change behaviour.
-#[allow(clippy::result_large_err)]
 fn require_internal_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
     let Some(expected) = state.api_key.as_deref() else {
         return Ok(());
@@ -190,6 +196,35 @@ fn require_internal_auth(headers: &HeaderMap, state: &AppState) -> Result<(), Re
 
 fn qname(ns: &str, name: &str) -> String {
     qualify_collection(ns, name)
+}
+
+/// Largest `top_k` / `ef` a request may name.
+///
+/// Both values size per-query working memory, so leaving them unbounded lets a
+/// caller decide how much the server allocates. The ceiling sits far above any
+/// real query -- the defaults are `top_k` 10 and `ef` 64.
+///
+/// Enforced on every route that accepts a caller-supplied `top_k`, `ef`,
+/// `nprobe` or `prefetch`, including the `shard_query` fan-out. `shard_query`
+/// is gated by the global API key when one is configured (`require_internal_auth`),
+/// and open on a keyless deployment -- so on a keyless node this bound is the
+/// only thing standing between an unauthenticated request and the allocator.
+const MAX_QUERY_K: usize = 65_536;
+
+fn check_query_k(top_k: usize, ef: usize) -> Result<(), Response> {
+    if top_k > MAX_QUERY_K {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("top_k {top_k} exceeds maximum {MAX_QUERY_K}"),
+        ));
+    }
+    if ef > MAX_QUERY_K {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("ef {ef} exceeds maximum {MAX_QUERY_K}"),
+        ));
+    }
+    Ok(())
 }
 
 fn err(status: StatusCode, msg: impl ToString) -> Response {
@@ -433,6 +468,7 @@ async fn search(
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
+    check_query_k(body.top_k, ef)?;
     let results = col
         .read()
         .query(&body.vector, body.top_k, filter.as_ref(), ef)
@@ -483,6 +519,12 @@ async fn hybrid_search(
         .map(Filter::from_json)
         .transpose()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    check_query_k(body.top_k, body.ef)?;
+    // `prefetch` overrides the dense-side k inside HybridOptions::prefetch_k(),
+    // so it is the same allocation lever as top_k and needs the same ceiling.
+    if let Some(prefetch) = body.prefetch {
+        check_query_k(prefetch, 0)?;
+    }
     let mut opts = HybridOptions::new(body.top_k, body.ef);
     opts.rrf_k = body.rrf_k;
     opts.dense_weight = body.dense_weight;
@@ -546,6 +588,7 @@ async fn sparse_search(
     let col = db
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(body.top_k, 0)?;
     let results = col
         .read()
         .query_sparse(&body.text, body.top_k, filter.as_ref())
@@ -579,6 +622,7 @@ async fn explain(
     let col = db
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(body.top_k, body.ef)?;
     let (results, explain) = col
         .read()
         .query_explain(&body.vector, body.top_k, filter.as_ref(), body.ef)
@@ -674,6 +718,7 @@ async fn shard_query(
     let col = db
         .get_collection(name)
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    check_query_k(req.top_k, req.ef)?;
     let results = col
         .read()
         .query(&req.vector, req.top_k, filter.as_ref(), req.ef)
@@ -1061,7 +1106,6 @@ async fn delete_points(
 ///
 /// Tenant-scoped keys are sticky (path must equal the tenant ns). Global-key /
 /// open auth may use any path namespace.
-#[allow(clippy::result_large_err)]
 fn require_ns(headers: &HeaderMap, state: &AppState, path_ns: &str) -> Result<String, Response> {
     let auth_ns = require_auth(headers, state)?;
     let path_ns = dv_query::normalize_namespace(path_ns);
@@ -1197,6 +1241,7 @@ async fn search_ns(
         .get_collection(&qname(&ns, &name))
         .map_err(|e| err(StatusCode::NOT_FOUND, e))?;
     let ef = body.nprobe.unwrap_or(body.ef);
+    check_query_k(body.top_k, ef)?;
     let results = col
         .read()
         .query(&body.vector, body.top_k, filter.as_ref(), ef)
